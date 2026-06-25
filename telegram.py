@@ -34,7 +34,10 @@ API_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
 
 # ── [2] enviar_mensaje: envía texto HTML al chat ──
-def enviar_mensaje(texto):
+# type hint: texto: str, retorno -> bool
+# Mejora: str evita pasar números u objetos por error;
+#         bool documenta que retorna éxito/fracaso de la API.
+def enviar_mensaje(texto: str) -> bool:
     if not TOKEN or not CHAT_ID:
         print("TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados")
         return False
@@ -53,14 +56,20 @@ def enviar_mensaje(texto):
 
 
 # ── [3] formatear_precio: 12990 → "$12.990" ──
-def formatear_precio(valor):
+# type hint: valor: int | None, retorno -> str
+# Mejora: int | None documenta que acepta nulos (precio faltante);
+#         str siempre devuelve un string, nunca rompe el template.
+def formatear_precio(valor: int | None) -> str:
     if valor is None:
         return "—"
     return f"${valor:,.0f}".replace(",", ".")
 
 
 # ── [4] notificar_bajas: alerta de bajas > $5.000 ──
-def notificar_bajas(bajas):
+# type hint: bajas: list[dict], retorno -> bool
+# Mejora: list[dict] documenta que espera una lista de resultados;
+#         bool indica que la función siempre retorna True.
+def notificar_bajas(bajas: list[dict]) -> bool:
     if not bajas:
         print("No hay bajas de precio relevantes para notificar")
         return True
@@ -92,7 +101,10 @@ def notificar_bajas(bajas):
 
 
 # ── [5] notificar_resumen: resumen del escaneo ──
-def notificar_resumen(stats):
+# type hint: stats: dict, retorno -> bool
+# Mejora: dict evita acceder a stats["libros"] sobre None;
+#         bool documenta consistencia con notificar_bajas().
+def notificar_resumen(stats: dict) -> bool:
     texto = (
         "📊 <b>Resumen de escaneo</b>\n\n"
         f"📚 Libros procesados: {stats['libros']}\n"
@@ -104,7 +116,10 @@ def notificar_resumen(stats):
 
 
 # ── [6] detectar_bajas: consulta SQL de bajas de precio ──
-def detectar_bajas(conexion):
+# type hint: conexion: sqlite3.Connection, retorno -> list[dict]
+# Mejora: mypy valida que el parámetro sea una conexión SQLite;
+#         list[dict] indica que siempre retorna una lista (vacía si no hay bajas).
+def detectar_bajas(conexion: sqlite3.Connection) -> list[dict]:
     cursor = conexion.cursor()
     hoy_chile = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d")
     cursor.execute("""
@@ -139,7 +154,10 @@ def detectar_bajas(conexion):
 
 
 # ── [7] _extraer_porcentaje: "30% OFF" → 30 ──
-def _extraer_porcentaje(descuento_str):
+# type hint: descuento_str: str | None, retorno -> int
+# Mejora: str | None refleja que puede recibir None desde la DB;
+#         int siempre retorna un número (0 si no puede parsear).
+def _extraer_porcentaje(descuento_str: str | None) -> int:
     if not descuento_str or descuento_str == "Sin descuento":
         return 0
     try:
@@ -149,7 +167,11 @@ def _extraer_porcentaje(descuento_str):
 
 
 # ── [8] detectar_ofertas_flash: saltos de descuento vs histórico ──
-def detectar_ofertas_flash(conexion, salto_minimo=20):
+# type hint: conexion: sqlite3.Connection, salto_minimo: int = 20,
+#           retorno -> list[dict]
+# Mejora: tipar salto_minimo como int evita pasar strings al SQL;
+#         list[dict] documenta que retorna ofertas o lista vacía.
+def detectar_ofertas_flash(conexion: sqlite3.Connection, salto_minimo: int = 20) -> list[dict]:
     cursor = conexion.cursor()
     hoy_chile = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d")
     cursor.execute("""
@@ -192,7 +214,10 @@ def detectar_ofertas_flash(conexion, salto_minimo=20):
 
 
 # ── [9] notificar_ofertas_flash: alerta de oferta flash ──
-def notificar_ofertas_flash(ofertas):
+# type hint: ofertas: list[dict], retorno -> bool
+# Mejora: list[dict] documenta que espera el resultado de detectar_ofertas_flash();
+#         bool la hace consistente con las demás notificar_*().
+def notificar_ofertas_flash(ofertas: list[dict]) -> bool:
     if not ofertas:
         return True
     for oferta in ofertas:

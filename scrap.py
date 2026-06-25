@@ -3,10 +3,11 @@ import argparse
 import json
 import sqlite3
 import os
+from typing import Any
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, BrowserContext, Page
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de scrap.py:
@@ -33,7 +34,10 @@ AUTH_FILE = "auth.json"
 
 
 # ── [2] crear_tablas: esquema SQLite ──
-def crear_tablas(conexion):
+# type hint: conexion: sqlite3.Connection, retorno -> None
+# Mejora: mypy valida que solo pases conexiones SQLite;
+#         el IDE autocompleta .cursor() y .commit().
+def crear_tablas(conexion: sqlite3.Connection) -> None:
     cursor = conexion.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS libros (
@@ -89,7 +93,10 @@ def crear_tablas(conexion):
 
 
 # ── [3] limpiar_precio: "$12.990" → 12990 ──
-def limpiar_precio(precioTexto):
+# type hint: precioTexto: str | None, retorno -> int | None
+# Mejora: mypy detecta si le pasas un entero (error común);
+#         el retorno opcional fuerza a quien llama a manejar None.
+def limpiar_precio(precioTexto: str | None) -> int | None:
     if precioTexto is None:
         return None
     try:
@@ -102,7 +109,11 @@ def limpiar_precio(precioTexto):
 
 
 # ── [4] extraer_precio_producto: scraping individual por producto ──
-async def extraer_precio_producto(url, browser_context, timeout_sec=60):
+# type hint: url: str, browser_context: BrowserContext, timeout_sec: int = 60
+#           retorno -> dict | None
+# Mejora: el parámetro BrowserContext es el tipo exacto de Playwright;
+#         al tipar timeout_sec como int mypy evita pasar strings.
+async def extraer_precio_producto(url: str, browser_context: BrowserContext, timeout_sec: int = 60) -> dict | None:
     try:
         page_ctx = await browser_context.new_page()
         try:
@@ -166,7 +177,10 @@ async def extraer_precio_producto(url, browser_context, timeout_sec=60):
 
 
 # ── [5] obtener_ids_listas: IDs de wishlists del dashboard ──
-async def obtener_ids_listas(page):
+# type hint: page: Page, retorno -> list[str]
+# Mejora: Page es el tipo exacto de Playwright;
+#         list[str] indica que retorna strings, no números.
+async def obtener_ids_listas(page: Page) -> list[str]:
     contenedor = await page.wait_for_selector("ul.ul-wishlist")
     listas = await contenedor.query_selector_all('li[data-view="listaDeseosProductos"]')
     ids_listas = []
@@ -179,7 +193,10 @@ async def obtener_ids_listas(page):
 
 
 # ── [6] extraer_libros: parsea HTML de wishlist → dicts ──
-def extraer_libros(soup, base_url="https://www.buscalibre.cl"):
+# type hint: soup: BeautifulSoup, base_url: str, retorno -> list[dict[str, Any]]
+# Mejora: BeautifulSoup autocompleta .find() y .find_all();
+#         list[dict[str, Any]] documenta la estructura de datos.
+def extraer_libros(soup: BeautifulSoup, base_url: str = "https://www.buscalibre.cl") -> list[dict[str, Any]]:
     libros = soup.find_all("div", class_="info-div")
     datos_lista = []
     for libro in libros:
@@ -246,7 +263,11 @@ def extraer_libros(soup, base_url="https://www.buscalibre.cl"):
 
 
 # ── [7] guardar_libro: INSERT + detección de bajas ──
-def guardar_libro(conexion, datos_libro, id_lista_db):
+# type hint: conexion: sqlite3.Connection, datos_libro: dict,
+#           id_lista_db: int, retorno -> dict | None
+# Mejora: tipar id_lista_db como int evita pasar strings por error;
+#         dict | None documenta que puede fallar (libro duplicado).
+def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: int) -> dict | None:
     cursor = conexion.cursor()
     titulo = datos_libro["titulo"]
     autor = datos_libro["autor"]
@@ -327,7 +348,10 @@ def guardar_libro(conexion, datos_libro, id_lista_db):
 
 
 # ── [8] main: orquestador del scraping completo ──
-async def main(headless=False):
+# type hint: headless: bool = False, retorno -> list[dict]
+# Mejora: bool restringe el parámetro a True/False únicamente;
+#         list[dict] documenta que retorna los cambios detectados.
+async def main(headless: bool = False) -> list[dict]:
     conexion = sqlite3.connect("libros.db")
     crear_tablas(conexion)
     cursor = conexion.cursor()

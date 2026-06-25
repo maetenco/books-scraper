@@ -5,23 +5,59 @@ import sqlite3
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, Response
 
+# ═══════════════════════════════════════════════════════════════
+# Conceptos de dashboard.py:
+#  [1] app / DB_PATH          → Instancia Flask y ruta a SQLite.
+#  [2] get_db()               → Conexión con row_factory para
+#       acceder a columnas por nombre (dict-like).
+#  [3] formatear_precio /     → Filtros Jinja2 para mostrar
+#      formatear_fecha          precios ($12.990) y fechas (DD/MM/AA).
+#  [4] sparkline()            → Genera SVG inline de minigráfico
+#       de tendencia de precios (verde si baja, rojo si sube).
+#  [5] index()                → Ruta "/": resumen con cards de
+#       totales y grid de listas de deseos.
+#  [6] ver_lista()            → Ruta "/lista/<id>": libros de una
+#       wishlist específica con precios y sparklines.
+#  [7] ver_todos()            → Ruta "/todos": todos los libros
+#       con búsqueda, orden por columna y toggle de columnas.
+#  [8] export_csv()           → Ruta "/todos/export": descarga
+#       CSV de todos los libros con su último precio.
+#  [9] stats()                → Ruta "/stats": tablas de libros
+#       con más cambios, mayor ahorro, mayores descuentos.
+# [10] ver_libro()            → Ruta "/libro/<id>": detalle con
+#       gráfico Chart.js y recomendación de compra.
+# [11] eliminar_libro()       → Ruta POST "/libro/<id>/eliminar":
+#       borra libro y su historial de precios.
+# [12] api_precios()          → Ruta "/api/precios/<id>": JSON
+#       con historial para el gráfico Chart.js.
+# ═══════════════════════════════════════════════════════════════
+
+# ── [1] app Flask ──
 app = Flask(__name__)
 DB_PATH = "libros.db"
 
 
-def get_db():
+# ── [2] get_db: conexión SQLite con row_factory ──
+# type hint: retorno -> sqlite3.Connection
+# Mejora: mypy sabe que retorna una conexión real, activa autocompletado
+#         de .cursor(), .commit(), .close() en el IDE.
+def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def formatear_precio(valor):
+# ── [3] Filtros de template ──
+def formatear_precio(valor: int | None) -> str:
     if valor is None:
         return "—"
     return f"${valor:,.0f}".replace(",", ".")
 
 
-def formatear_fecha(fecha):
+# type hint: fecha: str | None, retorno -> str
+# Mejora: str | None cubre fechas nulas de la DB;
+#         str siempre devuelve algo renderizable, evita errores en templates.
+def formatear_fecha(fecha: str | None) -> str:
     if not fecha:
         return "—"
     return fecha[8:10] + "/" + fecha[5:7] + "/" + fecha[2:4]
@@ -30,7 +66,11 @@ def formatear_fecha(fecha):
 app.jinja_env.filters["fecha"] = formatear_fecha
 
 
-def sparkline(precios_str, ancho=80, alto=24):
+# type hint: precios_str: str | None, ancho: int = 80, alto: int = 24,
+#           retorno -> str
+# Mejora: str | None cubre libros sin historial;
+#         ancho/alto tipados como int evitan pasar strings.
+def sparkline(precios_str: str | None, ancho: int = 80, alto: int = 24) -> str:
     """Genera SVG inline de un mini gráfico de precios."""
     if not precios_str:
         return ""
@@ -61,8 +101,12 @@ def sparkline(precios_str, ancho=80, alto=24):
 app.jinja_env.filters["sparkline"] = sparkline
 
 
+# ── [5] index: página principal con resumen ──
+# type hint: retorno -> str
+# Mejora: render_template() retorna str; tiparlo evita confusiones
+#         con otros tipos de respuesta HTTP.
 @app.route("/")
-def index():
+def index() -> str:
     conn = get_db()
     cursor = conn.cursor()
 
@@ -100,8 +144,12 @@ def index():
                            sin_stock_count=sin_stock_count)
 
 
+# ── [6] ver_lista: libros de una wishlist ──
+# type hint: lista_id: int, retorno -> str | tuple
+# Mejora: int lo recibe de la URL (Flask lo convierte automáticamente);
+#         str | tuple cubre tanto el render exitoso como el 404.
 @app.route("/lista/<int:lista_id>")
-def ver_lista(lista_id):
+def ver_lista(lista_id: int) -> str | tuple:
     conn = get_db()
     cursor = conn.cursor()
 
@@ -134,8 +182,11 @@ def ver_lista(lista_id):
     return render_template("lista.html", lista=lista, libros=libros)
 
 
+# ── [7] ver_todos: todos los libros con búsqueda y orden ──
+# type hint: retorno -> str
+# Mejora: str indica que siempre renderiza HTML (nunca retorna error).
 @app.route("/todos")
-def ver_todos():
+def ver_todos() -> str:
     conn = get_db()
     cursor = conn.cursor()
 
@@ -200,8 +251,12 @@ def ver_todos():
     return render_template("todos.html", libros=libros, sort=sort, order=order, q=q)
 
 
+# ── [8] export_csv: descarga CSV ──
+# type hint: retorno -> flask.Response
+# Mejora: Response es el tipo exacto que retorna Flask para descargas;
+#         el IDE autocompleta mimetype, headers y set_cookie().
 @app.route("/todos/export")
-def export_csv():
+def export_csv() -> Response:
     conn = get_db()
     cursor = conn.cursor()
 
@@ -246,8 +301,11 @@ def export_csv():
     )
 
 
+# ── [9] stats: estadísticas y rankings ──
+# type hint: retorno -> str
+# Mejora: str documenta que renderiza HTML (nunca retorna datos crudos).
 @app.route("/stats")
-def stats():
+def stats() -> str:
     conn = get_db()
     cursor = conn.cursor()
 
@@ -346,8 +404,11 @@ def stats():
     )
 
 
+# ── [10] ver_libro: detalle individual con gráfico ──
+# type hint: libro_id: int, retorno -> str | tuple
+# Mejora: str | tuple cubre el caso 404 cuando el libro no existe.
 @app.route("/libro/<int:libro_id>")
-def ver_libro(libro_id):
+def ver_libro(libro_id: int) -> str | tuple:
     conn = get_db()
     cursor = conn.cursor()
 
@@ -432,8 +493,12 @@ def ver_libro(libro_id):
                            recomendacion=recomendacion)
 
 
+# ── [11] eliminar_libro: borra libro vía POST ──
+# type hint: libro_id: int, retorno -> flask.Response
+# Mejora: jsonify() retorna Response; mypy verifica que siempre
+#         retornes una respuesta HTTP válida.
 @app.route("/libro/<int:libro_id>/eliminar", methods=["POST"])
-def eliminar_libro(libro_id):
+def eliminar_libro(libro_id: int) -> Response:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM libros WHERE id = ?", (libro_id,))
@@ -448,8 +513,12 @@ def eliminar_libro(libro_id):
     return jsonify({"ok": True})
 
 
+# ── [12] api_precios: JSON para Chart.js ──
+# type hint: libro_id: int, retorno -> flask.Response
+# Mejora: Response documenta que retorna JSON (no HTML);
+#         mypy valida que el endpoint siempre responda correctamente.
 @app.route("/api/precios/<int:libro_id>")
-def api_precios(libro_id):
+def api_precios(libro_id: int) -> Response:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -478,5 +547,6 @@ def api_precios(libro_id):
     return jsonify({"fechas": fechas, "actual": actual, "antes": antes, "descuentos": descuentos})
 
 
+# ── Entry point ──
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
