@@ -1,0 +1,64 @@
+{% extends "layout.html" %}
+{% block title %}Inicio — Books Dashboard{% endblock %}
+
+{% block content %}
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card text-bg-primary h-100">
+            <div class="card-body text-center">
+                <h6 class="card-title text-uppercase small opacity-75">Libros</h6>
+                <span class="display-4 fw-bold">{{ total_libros }}</span>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-bg-success h-100">
+            <div class="card-body text-center">
+                <h6 class="card-title text-uppercase small opacity-75">Registros de precio</h6>
+                <span class="display-4 fw-bold">{{ total_precios }}</span>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-bg-info h-100">
+            <div class="card-body text-center">
+                <h6 class="card-title text-uppercase small opacity-75">Última actualización</h6>
+                <span class="lead fw-bold">
+                    {% if ultima_actualizacion %}
+                        {{ ultima_actualizacion|fecha }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if sin_stock_count %}
+<div class="alert alert-warning py-2 mb-4">
+    ⚠️ <strong>{{ sin_stock_count }}</strong> libro(s) están actualmente <strong>Sin Stock</strong>.
+    <a href="{{ url_for('ver_todos') }}" class="alert-link">Ver todos</a>
+</div>
+{% endif %}
+
+<div class="row g-3">
+    {% for lista in listas %}
+    <div class="col-lg-4 col-md-6">
+        <a href="{{ url_for('ver_lista', lista_id=lista['id']) }}" class="text-decoration-none">
+            <div class="card h-100 border-secondary lista-card">
+                <div class="card-body">
+                    <h5 class="card-title text-truncate">{{ lista['nombre'] }}</h5>
+                    <p class="card-text text-secondary mb-0">
+                        <span class="badge bg-primary">{{ lista['num_libros'] }} libros</span>
+                    </p>
+                </div>
+                <div class="card-footer bg-transparent border-secondary text-end small text-secondary">
+                    Ver lista →
+                </div>
+            </div>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Books Dashboard{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js">
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="/">
+                📚 Books Dashboard
+            </a>
+            <div class="d-flex align-items-center gap-3">
+                <a href="/todos" class="text-decoration-none text-secondary small">Todos</a>
+                <a href="/stats" class="text-decoration-none text-secondary small">Estadísticas</a>
+                <span class="text-secondary small">BuscaLibre Scraper</span>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container py-4">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer mt-auto py-3 bg-dark border-top border-secondary">
+        <div class="container text-center text-secondary small">
+            Books Scraper &mdash; datos actualizados desde <code>libros.db</code>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js">
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

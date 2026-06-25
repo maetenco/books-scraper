@@ -1,0 +1,265 @@
+{% extends "layout.html" %}
+{% block title %}{{ libro['titulo'] }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Inicio</a></li>
+        {% for l in listas %}
+        <li class="breadcrumb-item">
+            <a href="{{ url_for('ver_lista', lista_id=l['id']) }}">{{ l['nombre'] }}</a>
+        </li>
+        {% endfor %}
+        <li class="breadcrumb-item active" aria-current="page">{{ libro['titulo'] | capitalize }}</li>
+    </ol>
+</nav>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <h2>
+            {{ libro['titulo'] | capitalize }}
+            {% if libro['url'] %}
+                <a href="{{ libro['url'] }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-success ms-2" title="Abrir en BuscaLibre">🔗</a>
+            {% endif %}
+        </h2>
+        <p class="text-secondary fs-5 mb-4">{{ libro['autor'] | capitalize }}</p>
+        {% if libro['imagen_url'] %}
+            <div class="text-center mb-3 d-lg-none">
+                <img src="{{ libro['imagen_url'] }}" alt="" class="img-fluid rounded" style="max-height:250px;" loading="lazy">
+            </div>
+        {% endif %}
+
+        {% if precios %}
+        {% set ultimo = precios[0] %}
+        {% if ultimo['estado'] == 'sin_stock' %}
+        <div class="alert alert-warning py-3 mb-3">
+            <strong>⚠️ Sin Stock</strong> — Este libro no está disponible actualmente. No hay precio vigente.
+        </div>
+        {% else %}
+        <div class="row g-2 mb-3">
+            <div class="col-md-4">
+                <div class="card text-bg-success h-100">
+                    <div class="card-body text-center">
+                        <small class="text-uppercase opacity-75">Actual</small>
+                        <div class="fs-3 fw-bold">
+                            {% if ultimo['precio_actual'] is not none %}
+                                ${{ "{:,.0f}".format(ultimo['precio_actual']).replace(',', '.') }}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card text-bg-secondary h-100">
+                    <div class="card-body text-center">
+                        <small class="text-uppercase opacity-75">Antes</small>
+                        <div class="fs-3 fw-bold">
+                            {% if ultimo['precio_antes'] %}
+                                ${{ "{:,.0f}".format(ultimo['precio_antes']).replace(',', '.') }}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card text-bg-danger h-100">
+                    <div class="card-body text-center">
+                        <small class="text-uppercase opacity-75">Dto.</small>
+                        <div class="fs-3 fw-bold">{{ ultimo['descuento'] if ultimo['descuento'] and ultimo['descuento'] != 'Sin descuento' else '—' }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% if recomendacion %}
+        <div class="alert alert-{{ recomendacion['class'] }} py-2 mb-3 d-flex align-items-center gap-2">
+            <span class="fw-bold">{{ recomendacion['label'] }}</span>
+            {% if recomendacion['detail'] %}
+                <small class="opacity-75">— {{ recomendacion['detail'] }}</small>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% endif %}
+
+        <div class="card bg-dark border-secondary">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">Historial de precios</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="priceChart" height="250"></canvas>
+            </div>
+        </div>
+
+        {% if precios|length > 1 %}
+        <div class="card bg-dark border-secondary mt-3">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">Todos los registros</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 300px;">
+                    <table class="table table-dark table-hover mb-0 align-middle">
+                        <thead class="sticky-top">
+                            <tr>
+                                <th>Fecha</th>
+                                <th class="text-end">Precio</th>
+                                <th class="text-end">Antes</th>
+                                <th class="text-center">Dto.</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for p in precios %}
+                            <tr>
+                                <td class="small">{{ p['fecha']|fecha }}</td>
+                                <td class="text-end font-monospace">
+                                    {% if p['estado'] == 'sin_stock' %}
+                                        <span class="badge bg-warning text-dark">Sin Stock</span>
+                                    {% elif p['precio_actual'] is not none %}
+                                        ${{ "{:,.0f}".format(p['precio_actual']).replace(',', '.') }}
+                                    {% else %}
+                                        <span class="text-secondary">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-end font-monospace text-secondary">
+                                    {% if p['precio_antes'] %}
+                                        ${{ "{:,.0f}".format(p['precio_antes']).replace(',', '.') }}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </td>
+                                <td class="text-center">
+                                    {% if p['descuento'] and p['descuento'] != 'Sin descuento' and p['descuento'] != 'Sin stock' %}
+                                        <span class="badge bg-danger">{{ p['descuento'] }}</span>
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+    </div>
+    {% if libro['imagen_url'] %}
+    <div class="col-lg-4 d-none d-lg-block">
+        <div class="card bg-dark border-secondary">
+            <div class="card-body text-center">
+                <img src="{{ libro['imagen_url'] }}" alt="" class="img-fluid rounded" loading="lazy">
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<a href="javascript:history.back()" class="btn btn-outline-secondary mt-3">← Volver</a>
+<button id="btnEliminar" class="btn btn-outline-danger mt-3 ms-2">🗑 Eliminar libro</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const btnEliminar = document.getElementById('btnEliminar');
+    if (btnEliminar) {
+        btnEliminar.addEventListener('click', function() {
+            if (!confirm('¿Eliminar este libro? Se borrará todo su historial de precios.')) return;
+            fetch("{{ url_for('eliminar_libro', libro_id=libro['id']) }}", { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ok) window.location.href = "{{ url_for('index') }}";
+                });
+        });
+    }
+    fetch("{{ url_for('api_precios', libro_id=libro['id']) }}")
+        .then(r => r.json())
+        .then(data => {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+
+            const descuentosFiltrados = data.descuentos.map(d => d != null ? d : null);
+            const hasDescuentos = descuentosFiltrados.some(d => d !== null);
+
+            const datasets = [
+                {
+                    label: 'Precio actual ($)',
+                    data: data.actual,
+                    borderColor: '#198754',
+                    backgroundColor: 'rgba(25, 135, 84, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Precio antes ($)',
+                    data: data.antes,
+                    borderColor: '#6c757d',
+                    backgroundColor: 'rgba(108, 117, 125, 0.05)',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.3,
+                    yAxisID: 'y',
+                }
+            ];
+
+            if (hasDescuentos) {
+                datasets.push({
+                    label: 'Descuento (%)',
+                    data: descuentosFiltrados,
+                    borderColor: '#ffc107',
+                    backgroundColor: 'rgba(255, 193, 7, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    yAxisID: 'y1',
+                });
+            }
+
+            new Chart(ctx, {
+                type: 'line',
+                data: { labels: data.fechas, datasets },
+                options: {
+                    responsive: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: {
+                            labels: { color: '#dee2e6' }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#adb5bd' },
+                            grid: { color: 'rgba(255,255,255,0.05)' }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            ticks: {
+                                color: '#adb5bd',
+                                callback: v => '$' + v.toLocaleString('es-CL')
+                            },
+                            grid: { color: 'rgba(255,255,255,0.05)' }
+                        },
+                        y1: hasDescuentos ? {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            min: 0,
+                            max: 100,
+                            ticks: {
+                                color: '#ffc107',
+                                callback: v => v + '%'
+                            },
+                            grid: { drawOnChartArea: false }
+                        } : undefined
+                    }
+                }
+            });
+        });
+});
+</script>
+{% endblock %}

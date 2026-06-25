@@ -1,0 +1,169 @@
+{% extends "layout.html" %}
+{% block title %}Estadísticas{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Inicio</a></li>
+        <li class="breadcrumb-item active">Estadísticas</li>
+    </ol>
+</nav>
+
+<h2 class="mb-4">Estadísticas</h2>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-primary h-100">
+            <div class="card-body text-center">
+                <div class="fs-1 fw-bold">{{ total_libros }}</div>
+                <div class="small opacity-75">Libros</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-success h-100">
+            <div class="card-body text-center">
+                <div class="fs-1 fw-bold">{{ total_precios }}</div>
+                <div class="small opacity-75">Registros de precio</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-info h-100">
+            <div class="card-body text-center">
+                <div class="fs-1 fw-bold">{{ precios_hoy }}</div>
+                <div class="small opacity-75">Precios hoy</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-warning h-100">
+            <div class="card-body text-center">
+                <div class="fs-1 fw-bold">
+                    {% if total_ahorro %}
+                        ${{ "{:,.0f}".format(total_ahorro).replace(',', '.') }}
+                    {% else %}
+                        0
+                    {% endif %}
+                </div>
+                <div class="small opacity-75">Ahorro total actual</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if primera_fecha %}
+<div class="alert alert-secondary text-center mb-4">
+    Siguiendo precios desde <strong>{{ primera_fecha|fecha }}</strong>
+    · Última actualización: <strong>{{ ultima_actualizacion|fecha }}</strong>
+</div>
+{% endif %}
+
+<div class="row g-4">
+
+    <div class="col-lg-6">
+        <div class="card bg-dark border-secondary h-100">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">📈 Libros con más cambios de precio</h5>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-dark table-hover mb-0">
+                    <thead>
+                        <tr><th>#</th><th>Título</th><th>Autor</th><th class="text-end">Cambios</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in mas_cambios %}
+                        <tr>
+                            <td class="text-secondary">{{ loop.index }}</td>
+                            <td{% if r['listas'] %} title="{{ r['listas'] }}"{% endif %}>{{ r['titulo'] | capitalize }}</td>
+                            <td class="text-secondary">{{ r['autor'] | capitalize }}</td>
+                            <td class="text-end fw-bold">{{ r['cambios'] }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card bg-dark border-secondary h-100">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">💰 Mayor ahorro actual</h5>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-dark table-hover mb-0">
+                    <thead>
+                        <tr><th>#</th><th>Título</th><th class="text-end">Antes</th><th class="text-end">Ahora</th><th class="text-end">Ahorro</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in mayor_ahorro %}
+                        <tr>
+                            <td class="text-secondary">{{ loop.index }}</td>
+                            <td{% if r['listas'] %} title="{{ r['listas'] }}"{% endif %}>{{ r['titulo'] | capitalize }}</td>
+                            <td class="text-end text-secondary font-monospace">${{ "{:,.0f}".format(r['precio_antes']).replace(',', '.') }}</td>
+                            <td class="text-end text-success font-monospace">${{ "{:,.0f}".format(r['precio_actual']).replace(',', '.') }}</td>
+                            <td class="text-end text-warning font-monospace fw-bold">${{ "{:,.0f}".format(r['ahorro']).replace(',', '.') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card bg-dark border-secondary h-100">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">🏷️ Mayores descuentos actuales</h5>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-dark table-hover mb-0">
+                    <thead>
+                        <tr><th>#</th><th>Título</th><th class="text-center">Dto.</th><th class="text-end">Antes</th><th class="text-end">Ahora</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in mayor_descuento %}
+                        <tr>
+                            <td class="text-secondary">{{ loop.index }}</td>
+                            <td{% if r['listas'] %} title="{{ r['listas'] }}"{% endif %}>{{ r['titulo'] | capitalize }}</td>
+                            <td class="text-center"><span class="badge bg-danger">{{ r['descuento'] }}</span></td>
+                            <td class="text-end text-secondary font-monospace">${{ "{:,.0f}".format(r['precio_antes']).replace(',', '.') }}</td>
+                            <td class="text-end text-success font-monospace">${{ "{:,.0f}".format(r['precio_actual']).replace(',', '.') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card bg-dark border-secondary h-100">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">⏳ Libros con más tiempo en seguimiento</h5>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-dark table-hover mb-0">
+                    <thead>
+                        <tr><th>#</th><th>Título</th><th>Autor</th><th class="text-center">Desde</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in mas_antiguos %}
+                        <tr>
+                            <td class="text-secondary">{{ loop.index }}</td>
+                            <td{% if r['listas'] %} title="{{ r['listas'] }}"{% endif %}>{{ r['titulo'] | capitalize }}</td>
+                            <td class="text-secondary">{{ r['autor'] | capitalize }}</td>
+                            <td class="text-center text-info">{{ r['desde']|fecha }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<a href="/" class="btn btn-outline-secondary mt-4">← Volver</a>
+{% endblock %}

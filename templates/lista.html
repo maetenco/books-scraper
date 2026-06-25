@@ -1,0 +1,119 @@
+{% extends "layout.html" %}
+{% block title %}{{ lista['nombre'] }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Inicio</a></li>
+        <li class="breadcrumb-item active">{{ lista['nombre'] }}</li>
+    </ol>
+</nav>
+
+<h2 class="mb-4">{{ lista['nombre'] }}</h2>
+
+{% if libros %}
+<div class="table-responsive">
+    <table class="table table-dark table-hover align-middle">
+        <thead>
+            <tr>
+                <th style="width:50px;">Img</th>
+                <th>Título</th>
+                <th>Autor</th>
+                <th class="text-center">Tendencia</th>
+                <th class="text-center">🔗</th>
+                <th class="text-end">Precio actual</th>
+                <th class="text-end">Precio antes</th>
+                <th class="text-center">Dto.</th>
+                <th class="text-end">Precio más bajo</th>
+                <th class="text-center">Desde</th>
+                <th class="text-center">Últ. Precio</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for libro in libros %}
+            <tr>
+                <td class="text-center">
+                    {% if libro['imagen_url'] %}
+                        <img src="{{ libro['imagen_url'] }}" alt="" class="rounded" style="width:40px;height:60px;object-fit:cover;" loading="lazy">
+                    {% else %}
+                        <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="{{ url_for('ver_libro', libro_id=libro['id']) }}"
+                       class="text-decoration-none fw-medium">
+                        {{ libro['titulo'] | capitalize }}
+                    </a>
+                </td>
+                <td class="text-secondary">{{ libro['autor'] | capitalize }}</td>
+                <td class="text-center py-0">
+                    {% if libro['precios_hist'] %}
+                        {{ libro['precios_hist']|sparkline|safe }}
+                    {% endif %}
+                </td>
+                <td class="text-center">
+                    {% if libro['url'] %}
+                        <a href="{{ libro['url'] }}" target="_blank" rel="noopener" class="text-decoration-none text-secondary" title="Ver en BuscaLibre">🔗</a>
+                    {% else %}
+                        <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-end font-monospace">
+                    {% if libro['estado'] == 'sin_stock' %}
+                        <span class="badge bg-warning text-dark">Sin Stock</span>
+                    {% elif libro['precio_actual'] %}
+                        <span class="text-success fw-bold">
+                            ${{ "{:,.0f}".format(libro['precio_actual']).replace(',', '.') }}
+                        </span>
+                    {% else %}
+                        <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-end font-monospace text-secondary">
+                    {% if libro['precio_antes'] %}
+                        <s>${{ "{:,.0f}".format(libro['precio_antes']).replace(',', '.') }}</s>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="text-center">
+                    {% if libro['descuento'] and libro['descuento'] != 'Sin descuento' %}
+                        <span class="badge bg-danger">{{ libro['descuento'] }}</span>
+                    {% else %}
+                        <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-end font-monospace">
+                    {% if libro['precio_min'] %}
+                        <span class="text-info fw-bold">
+                            ${{ "{:,.0f}".format(libro['precio_min']).replace(',', '.') }}
+                        </span>
+                    {% else %}
+                        <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-center small text-info">
+                    {% if libro['fecha_min'] %}
+                        {{ libro['fecha_min']|fecha }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="text-center small text-secondary">
+                    {% if libro['fecha'] %}
+                        {{ libro['fecha']|fecha }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-secondary">No hay libros en esta lista.</div>
+{% endif %}
+
+<a href="/" class="btn btn-outline-secondary mt-3">← Volver</a>
+{% endblock %}

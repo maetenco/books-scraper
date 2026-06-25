@@ -1,0 +1,50 @@
+body {
+    background-color: #1a1d21;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+main {
+    flex: 1;
+}
+
+.lista-card {
+    transition: transform 0.15s, border-color 0.15s;
+}
+
+.lista-card:hover {
+    transform: translateY(-3px);
+    border-color: #6ea8fe !important;
+}
+
+.table {
+    margin-bottom: 0;
+}
+
+.sticky-top {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.table thead th {
+    background-color: #212529;
+    border-bottom: 2px solid #495057;
+}
+
+.font-monospace {
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
+
+code {
+    color: #6ea8fe;
+}
+
+.card {
+    border-width: 1px;
+}
+
+.badge {
+    font-weight: 500;
+}
