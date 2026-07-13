@@ -24,7 +24,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install Playwright
-        run: playwright install chromium
+        run: python -m playwright install chromium
 
       - name: Run test
         run: pytest tests/ -v
