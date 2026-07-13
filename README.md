@@ -4,6 +4,7 @@
 ![Playwright](https://img.shields.io/badge/Playwright-1.52-45ba4b)
 ![Flask](https://img.shields.io/badge/Flask-3.1-000)
 ![SQLite](https://img.shields.io/badge/SQLite-3-003B57)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 Scraper de precios para listas de deseos de **BuscaLibre.cl** con historial, dashboard web y notificaciones por Telegram.
 
@@ -19,6 +20,28 @@ Scraper de precios para listas de deseos de **BuscaLibre.cl** con historial, das
 - **Múltiples listas** — Soporte para varias wishlists con organización N:M
 - **Export CSV** — Descarga de datos completa
 - **Recomendación de compra** — Algoritmo que sugiere el mejor momento según mínimo histórico y tendencia
+
+---
+
+## Demo
+
+### Terminal — Ejecución del scraper
+![Terminal](static/img/book_scraper1.png)
+
+### Dashboard principal
+![Dashboard](static/img/book_scraper2.png)
+
+### Todos los libros
+![Todos los libros](static/img/book_scraper3.png)
+
+### Estadísticas
+![Estadísticas](static/img/book_scraper4.png)
+
+### Detalle de libro con gráfico de precios
+![Detalle de libro](static/img/book_scraper5.png)
+
+### Notificación por Telegram
+![Telegram](static/img/book_scraper6.png)
 
 ---
 
@@ -78,8 +101,11 @@ books-scraper/
 │   ├── todos.html
 │   └── stats.html
 ├── static/
-│   └── style.css
+│   ├── style.css
+│   └── img/          # Screenshots del proyecto
+├── tests/            # Tests con pytest
 ├── requirements.txt
+├── LICENSE
 ├── .env.example
 └── .gitignore
 ```
@@ -116,6 +142,47 @@ BuscaLibre.cl
                ├── index.html   (resumen)
                ├── lista.html   (por wishlist)
                ├── todos.html   (búsqueda global)
-               ├── libro.html   (detalle + gráfico)
-               └── stats.html   (estadísticas)
+                ├── libro.html   (detalle + gráfico)
+                └── stats.html   (estadísticas)
 ```
+
+---
+
+## Arquitectura & Decisiones
+
+### ¿Por qué Playwright y no Selenium?
+
+Playwright tiene soporte **async nativo** con `asyncio`, lo que permite hacer scraping concurrently sin bloquear. Selenium requiere threads o multiprocessing para lograr algo similar. Además, Playwright incluye **auto-wait** (espera inteligente a que los elementos estén listos), manejo integrado de `storage_state` para persistir sesiones, y es más moderno en su API.
+
+### ¿Por qué SQLite y no una base de datos relacional mayor?
+
+El proyecto es **single-user**. No necesitas concurrencia, usuarios simultáneos ni un servidor de base de datos corriendo 24/7. SQLite es un archivo portable (`libros.db`), cero configuración, y suficiente para miles de registros de precios. Si en el futuro necesitas escalar, la migración a PostgreSQL es directa porque el código ya usa queries SQL estándar.
+
+### Relación N:M entre wishlists y libros
+
+La tabla `libros_listas` permite que **un libro pertenezca a múltiples wishlists** y que **una wishlist contenga muchos libros**. Esto modela la realidad de BuscaLibre, donde puedes tener un libro en "Favoritos" y en "Regalos" simultáneamente. Una relación 1:N habría forzado duplicación de datos.
+
+### Historial append-only vs UPDATE
+
+Cada escaneo crea una **fila nueva** en la tabla `precios` en vez de actualizar la existente. Esto construye un historial completo que alimenta:
+- Los **sparklines SVG** inline en el dashboard (tendencia visual sin JavaScript).
+- El **gráfico Chart.js** con eje dual (precio + descuento %).
+- El **algoritmo de buy recommendation** que compara el precio actual con el mínimo histórico.
+
+### Lazy scraping — optimización de requests
+
+El scraper primero intenta leer el precio desde la **página de la wishlist** (donde BuscaLibre muestra `precioAhora` y `precioAntes`). Solo visita la **página individual del producto** si el precio no está visible o es `None` (línea 454 de `scrap.py`). Esto reduce significativamente la cantidad de requests y el tiempo de ejecución.
+
+### Buy recommendation algorithm
+
+El algoritmo en `dashboard.py:467-515` funciona así:
+1. Compara el precio actual con el **mínimo histórico** de todos los registros.
+2. Analiza la **tendencia** de los últimos 5 precios (bajada, subida o estable).
+3. Si está a ≤3% del mínimo histórico → **"Mejor momento"**.
+4. Si la tendencia es bajada → **"Espera"** (sigue bajando).
+5. Si la tendencia es subida → **"Subiendo"** (comprar pronto o esperar corrección).
+6. Sin tendencia clara → **"Sin tendencia clara"**.
+
+### Schema migration sin framework
+
+Las migraciones de esquema se hacen con `ALTER TABLE ... ADD COLUMN` envueltos en `try/except` (líneas 79-95 de `scrap.py`). Esto permite evolucionar la base de datos sin instalar un ORM o herramienta de migraciones, manteniendo el proyecto simple y sin dependencias extra.

@@ -255,6 +255,34 @@ def ver_todos() -> str:
 # type hint: retorno -> flask.Response
 # Mejora: Response es el tipo exacto que retorna Flask para descargas;
 #         el IDE autocompleta mimetype, headers y set_cookie().
+@app.route("/todos/export-txt")
+def export_txt() -> Response:
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT lib.titulo, lib.autor
+        FROM libros lib
+        ORDER BY lib.titulo COLLATE NOCASE
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    lines = []
+    for r in rows:
+        titulo = r["titulo"].strip().title() if r["titulo"] else "Sin título"
+        autor = r["autor"].strip().title() if r["autor"] else "Desconocido"
+        lines.append(f"{titulo} — {autor}")
+
+    content = "\n".join(lines)
+
+    return Response(
+        content,
+        mimetype="text/plain; charset=utf-8",
+        headers={"Content-Disposition": "attachment;filename=listado_libros.txt"},
+    )
+
+
 @app.route("/todos/export")
 def export_csv() -> Response:
     conn = get_db()

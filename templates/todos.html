@@ -23,6 +23,7 @@
     <h2 class="mb-0">Todos los libros <span class="text-secondary fs-5">({{ libros|length }})</span></h2>
     <div class="d-flex gap-2">
         <a href="{{ url_for('export_csv') }}" class="btn btn-outline-success btn-sm">CSV</a>
+        <a href="{{ url_for('export_txt') }}" class="btn btn-outline-info btn-sm">TXT</a>
         <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#colToggles" aria-expanded="false">
             Columnas
         </button>
