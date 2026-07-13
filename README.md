@@ -133,24 +133,18 @@ books-scraper/
 
 ## Arquitectura
 
-```
-BuscaLibre.cl
-     │
-     ▼ (Playwright)
-  scrap.py
-     │
-     ▼ (SQLite)
-  libros.db
-     │
-     ├──► telegram.py   →  Telegram API
-     │
-     └──► dashboard.py  →  Flask web :5000
-               │
-               ├── index.html   (resumen)
-               ├── lista.html   (por wishlist)
-               ├── todos.html   (búsqueda global)
-                ├── libro.html   (detalle + gráfico)
-                └── stats.html   (estadísticas)
+```mermaid
+graph TD
+    A[BuscaLibre.cl] -->|Playwright async| B[scrap.py]
+    B -->|INSERT/UPSERT| C[(libros.db SQLite)]
+    B -->|Detecta bajas| D[telegram.py]
+    D -->|POST API| E[🔔 Telegram Bot]
+    C -->|SELECT| F[dashboard.py Flask]
+    F --> G[index - Resumen]
+    F --> H[lista - Por wishlist]
+    F --> I[todos - Búsqueda global]
+    F --> J[libro - Detalle + gráfico]
+    F --> K[stats - Estadísticas]
 ```
 
 ---
@@ -195,3 +189,17 @@ El algoritmo en `dashboard.py:467-515` funciona así:
 ### Schema migration sin framework
 
 Las migraciones de esquema se hacen con `ALTER TABLE ... ADD COLUMN` envueltos en `try/except` (líneas 79-95 de `scrap.py`). Esto permite evolucionar la base de datos sin instalar un ORM o herramienta de migraciones, manteniendo el proyecto simple y sin dependencias extra.
+
+---
+
+## Changelog
+
+| Versión | Descripción |
+|---------|-------------|
+| v0.1 | Scraping básico de precios con Playwright |
+| v0.2 | Historial de precios + SQLite (append-only) |
+| v0.3 | Notificaciones Telegram (bajas + flash deals) |
+| v0.4 | Dashboard web (Flask + Chart.js + sparklines) |
+| v0.5 | Buy recommendation + export CSV + estadísticas |
+| v0.6 | Tests (pytest) + GitHub Actions CI |
+| v1.0 | Portfolio ready: LICENSE, README, docs |
