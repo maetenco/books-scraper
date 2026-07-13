@@ -5,6 +5,7 @@
 ![Flask](https://img.shields.io/badge/Flask-3.1-000)
 ![SQLite](https://img.shields.io/badge/SQLite-3-003B57)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Tests](https://github.com/maetenco/books-scraper/actions/workflows/test.yml/badge.svg)
 
 Scraper de precios para listas de deseos de **BuscaLibre.cl** con historial, dashboard web y notificaciones por Telegram.
 
@@ -26,21 +27,27 @@ Scraper de precios para listas de deseos de **BuscaLibre.cl** con historial, das
 ## Demo
 
 ### Terminal — Ejecución del scraper
+
 ![Terminal](static/img/book_scraper1.png)
 
 ### Dashboard principal
+
 ![Dashboard](static/img/book_scraper2.png)
 
 ### Todos los libros
+
 ![Todos los libros](static/img/book_scraper3.png)
 
 ### Estadísticas
+
 ![Estadísticas](static/img/book_scraper4.png)
 
 ### Detalle de libro con gráfico de precios
+
 ![Detalle de libro](static/img/book_scraper5.png)
 
 ### Notificación por Telegram
+
 ![Telegram](static/img/book_scraper6.png)
 
 ---
@@ -165,6 +172,7 @@ La tabla `libros_listas` permite que **un libro pertenezca a múltiples wishlist
 ### Historial append-only vs UPDATE
 
 Cada escaneo crea una **fila nueva** en la tabla `precios` en vez de actualizar la existente. Esto construye un historial completo que alimenta:
+
 - Los **sparklines SVG** inline en el dashboard (tendencia visual sin JavaScript).
 - El **gráfico Chart.js** con eje dual (precio + descuento %).
 - El **algoritmo de buy recommendation** que compara el precio actual con el mínimo histórico.
@@ -176,6 +184,7 @@ El scraper primero intenta leer el precio desde la **página de la wishlist** (d
 ### Buy recommendation algorithm
 
 El algoritmo en `dashboard.py:467-515` funciona así:
+
 1. Compara el precio actual con el **mínimo histórico** de todos los registros.
 2. Analiza la **tendencia** de los últimos 5 precios (bajada, subida o estable).
 3. Si está a ≤3% del mínimo histórico → **"Mejor momento"**.
