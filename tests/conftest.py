@@ -23,11 +23,26 @@ def db():
 
 
 @pytest.fixture
-def app():
-    from dashboard import app as flask_app
+def app(tmp_path):
+    import dashboard
+    from scrap import crear_tablas
+
+    original_db_path = dashboard.DB_PATH
+
+    test_db = tmp_path / "test.db"
+    dashboard.DB_PATH = str(test_db)
+
+    conn = sqlite3.connect(str(test_db))
+    crear_tablas(conn)
+    conn.close()
+
+    flask_app = dashboard.app
     flask_app.config["TESTING"] = True
     flask_app.config["SERVER_NAME"] = "localhost"
-    return flask_app
+
+    yield flask_app
+
+    dashboard.DB_PATH = original_db_path
 
 
 @pytest.fixture

@@ -88,6 +88,10 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE precios ADD COLUMN estado TEXT DEFAULT 'disponible'")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE libros ADD COLUMN imagen_url TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     conexion.commit()
 
