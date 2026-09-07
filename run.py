@@ -8,13 +8,19 @@ Uso:
 
 Para programar (Windows Task Scheduler):
     Action: python C:\ruta\run.py
-    Trigger: diario a las 10:00
+    Trigger 1: diario a las 10:00
+    Trigger 2: al iniciar sesión (con retraso ~5 min), por si el equipo
+               estaba apagado/suspendido a la hora fija.
+    (run.py evita correr dos veces el mismo día vía .last_run, así que
+     es seguro combinar ambos triggers en la misma tarea.)
 """
 
 import asyncio
 import argparse
 import sqlite3
 from dotenv import load_dotenv
+
+from utils import ya_corrio_hoy, marcar_ejecucion_hoy
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de run.py:
@@ -50,9 +56,21 @@ async def run() -> None:
     parser = argparse.ArgumentParser(description="Books scraper runner")
     parser.add_argument("--no-telegram", action="store_true", help="Skip Telegram notifications")
     parser.add_argument("--login", action="store_true", help="Run with browser (save session)")
+    parser.add_argument("--force", action="store_true", help="Run even if it already ran today")
     args = parser.parse_args()
 
+    # ── Evita correr dos veces el mismo día ──
+    # El Task Scheduler dispara run.py por horario fijo (10:00) y también
+    # al iniciar sesión (por si el equipo estaba apagado/suspendido a esa
+    # hora). Si ambos disparan el mismo día, el segundo se corta acá.
+    if args.force:
+        print("--force: se ignora el chequeo de ejecución diaria")
+    elif ya_corrio_hoy():
+        print("Ya se ejecutó hoy, se omite este disparo (usar --force para forzar)")
+        return
+
     cambios = await scrap_main(headless=not args.login)
+    marcar_ejecucion_hoy()
 
     conn = sqlite3.connect("libros.db")
     conn.execute("PRAGMA foreign_keys = ON")

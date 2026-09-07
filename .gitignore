@@ -7,6 +7,7 @@ __pycache__/
 # ─── Environment ────────────────────────────────
 .env
 auth.json
+.last_run
 
 # ─── Databases ──────────────────────────────────
 *.db
