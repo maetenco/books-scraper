@@ -1,13 +1,27 @@
 import asyncio
 import argparse
 import json
+import logging
 import sqlite3
 import os
 from typing import Any
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright, BrowserContext, Page
+from playwright.async_api import (
+    async_playwright,
+    BrowserContext,
+    Page,
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de scrap.py:
@@ -15,6 +29,9 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 #       Persiste cookies tras login manual para ejecución headless.
 #  [2] crear_tablas()       → Inicializa esquema SQLite con tablas
 #       libros, listas, libros_listas (N:M), precios (histórico).
+#  [2b] hacer_backup_db()   → Copia libros.db a backups/ antes de
+#       cada escaneo (API de backup de sqlite3), conserva las últimas
+#       BACKUPS_A_MANTENER copias.
 #  [3] limpiar_precio()     → Sanitiza string "$12.990" → int 12990.
 #       Elimina signos, separadores de miles y espacios.
 #  [4] extraer_precio_producto() → Scraper individual por producto
@@ -31,6 +48,15 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 # ═══════════════════════════════════════════════════════════════
 
 AUTH_FILE = "auth.json"
+DB_PATH = "libros.db"
+BACKUPS_DIR = "backups"
+BACKUPS_A_MANTENER = 7  # backups diarios más recientes que se conservan
+
+# Cuántas páginas de producto se abren en paralelo durante el lazy
+# scraping (extraer_precio_producto abre una página nueva por libro;
+# cada una es independiente, pero no conviene abrir decenas a la vez
+# contra el mismo sitio).
+MAX_CONCURRENCIA_LAZY_SCRAPING = 5
 
 
 # ── [2] crear_tablas: esquema SQLite ──
@@ -38,6 +64,7 @@ AUTH_FILE = "auth.json"
 # Mejora: mypy valida que solo pases conexiones SQLite;
 #         el IDE autocompleta .cursor() y .commit().
 def crear_tablas(conexion: sqlite3.Connection) -> None:
+    conexion.execute("PRAGMA foreign_keys = ON")
     cursor = conexion.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS libros (
@@ -61,7 +88,9 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             libro_id INTEGER,
             lista_id INTEGER,
-            UNIQUE(libro_id, lista_id)
+            UNIQUE(libro_id, lista_id),
+            FOREIGN KEY(libro_id) REFERENCES libros(id),
+            FOREIGN KEY(lista_id) REFERENCES listas(id)
         )
         """)
 
@@ -72,7 +101,8 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
             precio_actual INTEGER,
             precio_antes INTEGER,
             descuento TEXT,
-            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(libro_id) REFERENCES libros(id)
         )
         """)
 
@@ -93,7 +123,49 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Las queries de dashboard.py hacen subqueries correlacionadas por
+    # libro_id/fecha sobre esta tabla (potencialmente la más grande,
+    # crece indefinidamente por ser append-only); este índice evita un
+    # full table scan repetido a medida que el historial crece.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_precios_libro_fecha ON precios(libro_id, fecha)")
+
     conexion.commit()
+
+
+# ── [2b] hacer_backup_db: copia de libros.db antes de escanear ──
+# type hint: conexion: sqlite3.Connection, retorno -> str | None
+# Mejora: str | None documenta que puede no haber backup (p. ej. si
+#         falla por disco lleno); el llamador decide si es fatal o no.
+def hacer_backup_db(conexion: sqlite3.Connection) -> str | None:
+    """Copia libros.db a backups/libros_<fecha>.db usando la API de
+    backup de sqlite3 (segura incluso con la conexión abierta, a
+    diferencia de copiar el archivo a mano). Conserva solo los
+    BACKUPS_A_MANTENER más recientes para no crecer indefinidamente.
+    Nunca lanza: si falla, se loguea como warning y se retorna None,
+    para que un backup fallido no tumbe el scraping.
+    """
+    try:
+        os.makedirs(BACKUPS_DIR, exist_ok=True)
+        fecha = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y%m%d_%H%M%S")
+        destino_path = os.path.join(BACKUPS_DIR, f"libros_{fecha}.db")
+
+        destino = sqlite3.connect(destino_path)
+        with destino:
+            conexion.backup(destino)
+        destino.close()
+
+        backups = sorted(
+            f for f in os.listdir(BACKUPS_DIR)
+            if f.startswith("libros_") and f.endswith(".db")
+        )
+        for viejo in backups[:-BACKUPS_A_MANTENER]:
+            os.remove(os.path.join(BACKUPS_DIR, viejo))
+
+        logger.info("Backup de %s creado en %s", DB_PATH, destino_path)
+        return destino_path
+    except (OSError, sqlite3.Error) as e:
+        logger.warning("No se pudo crear el backup de %s: %s", DB_PATH, e)
+        return None
 
 
 # ── [3] limpiar_precio: "$12.990" → 12990 ──
@@ -122,13 +194,14 @@ async def extraer_precio_producto(url: str, browser_context: BrowserContext, tim
         page_ctx = await browser_context.new_page()
         try:
             await page_ctx.goto(url, wait_until="domcontentloaded", timeout=timeout_sec * 1000)
-        except Exception:
-            print("  timeout, reintentando una vez más...")
+        except PlaywrightTimeoutError:
+            logger.warning("Timeout navegando a %s, reintentando una vez más...", url)
             await page_ctx.goto(url, wait_until="domcontentloaded", timeout=timeout_sec * 1000)
 
         try:
             await page_ctx.wait_for_selector("div.opcionPrecio", timeout=8000)
-        except:
+        except PlaywrightTimeoutError:
+            # Selector opcional: no todas las páginas de producto lo tienen.
             pass
 
         html = await page_ctx.content()
@@ -175,8 +248,8 @@ async def extraer_precio_producto(url: str, browser_context: BrowserContext, tim
                 descuento = "Sin descuento"
                 return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
 
-    except Exception as e:
-        print(f"  Error scraping {url}: {e}")
+    except (PlaywrightError, json.JSONDecodeError, AttributeError, KeyError, ValueError) as e:
+        logger.error("Error scraping %s: %s", url, e)
     return None
 
 
@@ -314,6 +387,18 @@ def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: 
         (id_libro, id_lista_db)
     )
 
+    # Se consulta el último precio ANTES de insertar el nuevo registro:
+    # si se consultara después, la fila recién insertada podría ganar
+    # el desempate por fecha (mismo segundo) y la comparación terminaría
+    # comparando el precio nuevo contra sí mismo, sin detectar bajas.
+    ultimo_precio = None
+    if precio_actual is not None:
+        cursor.execute(
+            "SELECT precio_actual FROM precios WHERE libro_id = ? AND estado = 'disponible' ORDER BY fecha DESC, id DESC LIMIT 1",
+            (id_libro,)
+        )
+        ultimo_precio = cursor.fetchone()
+
     fecha_chile = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO precios (libro_id, precio_actual, precio_antes, descuento, estado, fecha) VALUES (?, ?, ?, ?, ?, ?)",
@@ -321,14 +406,8 @@ def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: 
     )
 
     if precio_actual is not None:
-        cursor.execute(
-            "SELECT precio_actual FROM precios WHERE libro_id = ? AND estado = 'disponible' ORDER BY fecha DESC LIMIT 1",
-            (id_libro,)
-        )
-        ultimo_precio = cursor.fetchone()
-
         print(f"Precio registrado: {titulo}")
-        
+
         precio_cambio = None
         if ultimo_precio is not None and ultimo_precio[0] is not None:
             if precio_actual < ultimo_precio[0]:
@@ -339,6 +418,7 @@ def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: 
                     "precio_nuevo": precio_actual,
                     "descuento": descuento,
                     "libro_id": id_libro,
+                    "url": url,
                 }
     else:
         if estado == "sin_stock":
@@ -351,13 +431,61 @@ def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: 
     return precio_cambio
 
 
+# ── [7b] _corregir_precio_libro: lazy scraping de un libro ──
+# type hint: libro: dict, idx/total: int, browser_context: BrowserContext,
+#           semaforo: asyncio.Semaphore, retorno -> bool
+# Mejora: bool indica si el libro terminó con datos corregidos, para
+#         poder contarlos con sum() tras el gather().
+async def _corregir_precio_libro(
+    libro: dict, idx: int, total: int, browser_context: BrowserContext, semaforo: asyncio.Semaphore
+) -> bool:
+    """Busca el precio real de un libro sin precio visible en la lista.
+
+    Muta `libro` in-place (mismo dict que vive en datos_lista). Cada
+    llamada a extraer_precio_producto() abre su propia página, así que
+    varios libros pueden procesarse en paralelo con seguridad; el
+    semáforo limita cuántas páginas se abren a la vez.
+    """
+    url = libro.get("url", "")
+    if not url:
+        print(f"  [{idx}/{total}] {libro['titulo'][:40]}... sin URL")
+        return False
+
+    async with semaforo:
+        precio_real = await extraer_precio_producto(url, browser_context)
+
+    if not precio_real:
+        print(f"  [{idx}/{total}] {libro['titulo'][:40]}... sin cambios")
+        return False
+
+    if precio_real.get("sin_stock"):
+        print(f"  [{idx}/{total}] {libro['titulo'][:40]}... sin stock")
+        libro["precio_actual"] = None
+        libro["precio_antes"] = None
+        libro["descuento"] = "Sin stock"
+        libro["estado"] = "sin_stock"
+        return True
+
+    if precio_real["precio_actual"] is not None:
+        print(f"  [{idx}/{total}] {libro['titulo'][:40]}... corregido: ${libro['precio_actual']} → ${precio_real['precio_actual']}")
+        libro["precio_actual"] = precio_real["precio_actual"]
+        libro["precio_antes"] = precio_real["precio_antes"]
+        libro["descuento"] = precio_real["descuento"]
+        libro["estado"] = "disponible"
+        return True
+
+    print(f"  [{idx}/{total}] {libro['titulo'][:40]}... sin cambios")
+    return False
+
+
 # ── [8] main: orquestador del scraping completo ──
 # type hint: headless: bool = False, retorno -> list[dict]
 # Mejora: bool restringe el parámetro a True/False únicamente;
 #         list[dict] documenta que retorna los cambios detectados.
 async def main(headless: bool = False) -> list[dict]:
-    conexion = sqlite3.connect("libros.db")
+    conexion = sqlite3.connect(DB_PATH)
     crear_tablas(conexion)
+    hacer_backup_db(conexion)
     cursor = conexion.cursor()
 
     url = "https://www.buscalibre.cl"
@@ -401,7 +529,7 @@ async def main(headless: bool = False) -> list[dict]:
 
             try:
                 nombre_antes = await page.locator("span.nombre >> nth=0").inner_text()
-            except:
+            except PlaywrightTimeoutError:
                 nombre_antes = ""
 
             nombre_lista = await lista_actual.query_selector("span.nombre")
@@ -441,7 +569,7 @@ async def main(headless: bool = False) -> list[dict]:
                     }""",
                     arg=nombre_antes
                 )
-            except:
+            except PlaywrightTimeoutError:
                 await page.wait_for_timeout(2000)
 
             await page.wait_for_timeout(1000)
@@ -453,36 +581,16 @@ async def main(headless: bool = False) -> list[dict]:
             print(f"Libros encontrados: {len(datos_lista)}")
             print("Obteniendo precios reales desde páginas de producto...")
 
-            corregidos = 0
+            semaforo = asyncio.Semaphore(MAX_CONCURRENCIA_LAZY_SCRAPING)
+            tareas_lazy = []
             for idx, libro in enumerate(datos_lista, 1):
                 if libro["precio_actual"] is not None and libro["precio_actual"] > 0:
                     print(f"  [{idx}/{len(datos_lista)}] {libro['titulo'][:40]}... ok (desde lista)")
                     continue
-                url = libro.get("url", "")
-                if url:
-                    print(f"  [{idx}/{len(datos_lista)}] {libro['titulo'][:40]}...", end=" ")
-                    precio_real = await extraer_precio_producto(url, context)
-                    if precio_real:
-                        if precio_real.get("sin_stock"):
-                            print("sin stock")
-                            libro["precio_actual"] = None
-                            libro["precio_antes"] = None
-                            libro["descuento"] = "Sin stock"
-                            libro["estado"] = "sin_stock"
-                            corregidos += 1
-                        elif precio_real["precio_actual"] is not None:
-                            print(f"corregido: ${libro['precio_actual']} → ${precio_real['precio_actual']}")
-                            libro["precio_actual"] = precio_real["precio_actual"]
-                            libro["precio_antes"] = precio_real["precio_antes"]
-                            libro["descuento"] = precio_real["descuento"]
-                            libro["estado"] = "disponible"
-                            corregidos += 1
-                        else:
-                            print("sin cambios")
-                    else:
-                        print("sin cambios")
-                else:
-                    print(f"  [{idx}/{len(datos_lista)}] {libro['titulo'][:40]}... sin URL")
+                tareas_lazy.append(_corregir_precio_libro(libro, idx, len(datos_lista), context, semaforo))
+
+            resultados_lazy = await asyncio.gather(*tareas_lazy)
+            corregidos = sum(resultados_lazy)
 
             print(f"Precios corregidos: {corregidos} de {len(datos_lista)}")
 

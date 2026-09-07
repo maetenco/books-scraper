@@ -1,9 +1,19 @@
 import re
 import csv
 import io
+import logging
+import os
 import sqlite3
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, Response
+from utils import formatear_precio
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de dashboard.py:
@@ -43,15 +53,26 @@ DB_PATH = "libros.db"
 #         de .cursor(), .commit(), .close() en el IDE.
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    # Si el scraper (run.py) tiene la DB abierta escribiendo al mismo
+    # tiempo, espera hasta 5s a que se libere el lock antes de lanzar
+    # "database is locked", en vez de fallar al instante.
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
     return conn
 
 
-# ── [3] Filtros de template ──
-def formatear_precio(valor: int | None) -> str:
-    if valor is None:
-        return "—"
-    return f"${valor:,.0f}".replace(",", ".")
+# Subquery reutilizada en ver_lista(), ver_todos() y export_csv(): id
+# del registro de precios más reciente de un libro (lib.id debe existir
+# en el FROM/JOIN de la query que la interpola). Único lugar donde se
+# define el criterio de "último precio" para evitar que las 3 rutas se
+# desincronicen si cambia (p. ej. el desempate por id, ver Fase 4).
+SUBQUERY_ULTIMO_PRECIO_ID = """
+            SELECT id FROM precios
+            WHERE libro_id = lib.id
+            ORDER BY fecha DESC, id DESC LIMIT 1
+        """
+
 
 
 # type hint: fecha: str | None, retorno -> str
@@ -159,20 +180,16 @@ def ver_lista(lista_id: int) -> str | tuple:
         conn.close()
         return "Lista no encontrada", 404
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT lib.id, lib.titulo, lib.autor, lib.url, lib.imagen_url,
                p.precio_actual, p.precio_antes, p.descuento, p.estado, p.fecha,
                (SELECT MIN(precio_actual) FROM precios WHERE libro_id = lib.id AND estado = 'disponible') as precio_min,
                (SELECT fecha FROM precios WHERE libro_id = lib.id AND estado = 'disponible'
                 ORDER BY precio_actual ASC, fecha ASC LIMIT 1) as fecha_min,
-               (SELECT GROUP_CONCAT(precio_actual, ',') FROM (SELECT precio_actual FROM precios WHERE libro_id = lib.id AND estado = 'disponible' ORDER BY fecha DESC LIMIT 10)) as precios_hist
+               (SELECT GROUP_CONCAT(precio_actual, ',') FROM (SELECT precio_actual FROM precios WHERE libro_id = lib.id AND estado = 'disponible' ORDER BY fecha DESC, id DESC LIMIT 10)) as precios_hist
         FROM libros lib
         JOIN libros_listas ll ON lib.id = ll.libro_id
-        LEFT JOIN precios p ON p.id = (
-            SELECT id FROM precios
-            WHERE libro_id = lib.id
-            ORDER BY fecha DESC LIMIT 1
-        )
+        LEFT JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
         WHERE ll.lista_id = ?
         ORDER BY lib.titulo
     """, (lista_id,))
@@ -224,13 +241,9 @@ def ver_todos() -> str:
                (SELECT GROUP_CONCAT(l.nombre, ' | ') FROM listas l
                 JOIN libros_listas ll2 ON ll2.lista_id = l.id
                 WHERE ll2.libro_id = lib.id) as listas,
-               (SELECT GROUP_CONCAT(precio_actual, ',') FROM (SELECT precio_actual FROM precios WHERE libro_id = lib.id AND estado = 'disponible' ORDER BY fecha DESC LIMIT 10)) as precios_hist
+               (SELECT GROUP_CONCAT(precio_actual, ',') FROM (SELECT precio_actual FROM precios WHERE libro_id = lib.id AND estado = 'disponible' ORDER BY fecha DESC, id DESC LIMIT 10)) as precios_hist
         FROM libros lib
-        LEFT JOIN precios p ON p.id = (
-            SELECT id FROM precios
-            WHERE libro_id = lib.id
-            ORDER BY fecha DESC LIMIT 1
-        )
+        LEFT JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
         {where}
         ORDER BY {sort_sql[sort]} {order.upper()}
     """, params)
@@ -288,7 +301,7 @@ def export_csv() -> Response:
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT lib.id, lib.titulo, lib.autor,
                p.precio_actual, p.precio_antes, p.descuento, p.fecha,
                (SELECT MIN(precio_actual) FROM precios WHERE libro_id = lib.id) as precio_min,
@@ -296,11 +309,7 @@ def export_csv() -> Response:
                 JOIN libros_listas ll2 ON ll2.lista_id = l.id
                 WHERE ll2.libro_id = lib.id) as listas
         FROM libros lib
-        LEFT JOIN precios p ON p.id = (
-            SELECT id FROM precios
-            WHERE libro_id = lib.id
-            ORDER BY fecha DESC LIMIT 1
-        )
+        LEFT JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
 
         ORDER BY lib.titulo
     """)
@@ -435,6 +444,74 @@ def stats() -> str:
 # ── [10] ver_libro: detalle individual con gráfico ──
 # type hint: libro_id: int, retorno -> str | tuple
 # Mejora: str | tuple cubre el caso 404 cuando el libro no existe.
+# ── Algoritmo de recomendación de compra ──
+# Umbral: a qué distancia del mínimo histórico se considera "mejor momento".
+RATIO_MEJOR_MOMENTO = 1.03
+# Ventana de precios recientes usada para calcular la tendencia (subiendo/bajando).
+VENTANA_TENDENCIA = 5
+
+
+def calcular_recomendacion(precios: list) -> dict | None:
+    """Algoritmo puro de recomendación de compra.
+
+    Extraído de ver_libro() para poder testearse sin pasar por
+    Flask/HTTP. `precios` es una lista de filas (sqlite3.Row o dict)
+    con clave "precio_actual", ordenadas por fecha DESCENDENTE (la más
+    reciente primero) — el mismo orden que entrega la query de
+    ver_libro(). Retorna None si no hay precios válidos.
+    """
+    if not precios:
+        return None
+
+    valores = [p["precio_actual"] for p in precios if p["precio_actual"] is not None]
+    if not valores:
+        return None
+
+    min_price = min(valores)
+    current_price = valores[0]
+    ratio = current_price / min_price if min_price > 0 else 1
+
+    recent_window = list(reversed(precios[:VENTANA_TENDENCIA]))
+    recent_vals = [p["precio_actual"] for p in recent_window if p["precio_actual"] is not None]
+
+    if len(recent_vals) >= 2:
+        first_p = recent_vals[0]
+        last_p = recent_vals[-1]
+        if last_p < first_p:
+            trend = "down"
+        elif last_p > first_p:
+            trend = "up"
+        else:
+            trend = "stable"
+    else:
+        trend = "stable"
+
+    if ratio <= RATIO_MEJOR_MOMENTO:
+        return {
+            "label": "Mejor momento ✅",
+            "class": "success",
+            "detail": f"A solo {((ratio - 1) * 100):.0f}% del mínimo histórico"
+        }
+    elif trend == "down":
+        return {
+            "label": "Espera 📉",
+            "class": "info",
+            "detail": "El precio viene bajando, conviene esperar"
+        }
+    elif trend == "up":
+        return {
+            "label": "Subiendo 📈",
+            "class": "warning",
+            "detail": "El precio está subiendo en los últimos registros"
+        }
+    else:
+        return {
+            "label": "Sin tendencia clara",
+            "class": "secondary",
+            "detail": ""
+        }
+
+
 @app.route("/libro/<int:libro_id>")
 def ver_libro(libro_id: int) -> str | tuple:
     conn = get_db()
@@ -458,61 +535,13 @@ def ver_libro(libro_id: int) -> str | tuple:
         SELECT precio_actual, precio_antes, descuento, estado, fecha
         FROM precios
         WHERE libro_id = ?
-        ORDER BY fecha DESC
+        ORDER BY fecha DESC, id DESC
     """, (libro_id,))
     precios = list(cursor.fetchall())
 
     conn.close()
 
-    recomendacion = None
-    if len(precios) >= 1:
-        valores = [p["precio_actual"] for p in precios if p["precio_actual"] is not None]
-        if valores:
-            min_price = min(valores)
-            current_price = valores[0]
-
-            ratio = current_price / min_price if min_price > 0 else 1
-
-            recent_window = precios[:5]
-            recent_window.reverse()
-            recent_vals = [p["precio_actual"] for p in recent_window if p["precio_actual"] is not None]
-
-            if len(recent_vals) >= 2:
-                first_p = recent_vals[0]
-                last_p = recent_vals[-1]
-                if last_p < first_p:
-                    trend = "down"
-                elif last_p > first_p:
-                    trend = "up"
-                else:
-                    trend = "stable"
-            else:
-                trend = "stable"
-
-            if ratio <= 1.03:
-                recomendacion = {
-                    "label": "Mejor momento ✅",
-                    "class": "success",
-                    "detail": f"A solo {((ratio - 1) * 100):.0f}% del mínimo histórico"
-                }
-            elif trend == "down":
-                recomendacion = {
-                    "label": "Espera 📉",
-                    "class": "info",
-                    "detail": "El precio viene bajando, conviene esperar"
-                }
-            elif trend == "up":
-                recomendacion = {
-                    "label": "Subiendo 📈",
-                    "class": "warning",
-                    "detail": "El precio está subiendo en los últimos registros"
-                }
-            else:
-                recomendacion = {
-                    "label": "Sin tendencia clara",
-                    "class": "secondary",
-                    "detail": ""
-                }
+    recomendacion = calcular_recomendacion(precios)
 
     return render_template("libro.html",
                            libro=libro,
@@ -527,16 +556,26 @@ def ver_libro(libro_id: int) -> str | tuple:
 #         retornes una respuesta HTTP válida.
 @app.route("/libro/<int:libro_id>/eliminar", methods=["POST"])
 def eliminar_libro(libro_id: int) -> Response:
+    # Mitigación CSRF simple: un <form> cross-site no puede setear
+    # headers custom, solo fetch/XHR del propio origen puede.
+    if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+        return jsonify({"ok": False, "error": "Solicitud no permitida"}), 403
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM libros WHERE id = ?", (libro_id,))
     if cursor.fetchone() is None:
         conn.close()
         return jsonify({"ok": False, "error": "Libro no encontrado"}), 404
-    cursor.execute("DELETE FROM precios WHERE libro_id = ?", (libro_id,))
-    cursor.execute("DELETE FROM libros_listas WHERE libro_id = ?", (libro_id,))
-    cursor.execute("DELETE FROM libros WHERE id = ?", (libro_id,))
-    conn.commit()
+    try:
+        cursor.execute("DELETE FROM precios WHERE libro_id = ?", (libro_id,))
+        cursor.execute("DELETE FROM libros_listas WHERE libro_id = ?", (libro_id,))
+        cursor.execute("DELETE FROM libros WHERE id = ?", (libro_id,))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        conn.rollback()
+        conn.close()
+        logger.warning("No se pudo eliminar libro_id=%s: %s", libro_id, e)
+        return jsonify({"ok": False, "error": "Base de datos ocupada, intenta de nuevo"}), 503
     conn.close()
     return jsonify({"ok": True})
 
@@ -553,7 +592,7 @@ def api_precios(libro_id: int) -> Response:
         SELECT precio_actual, precio_antes, fecha, descuento, estado
         FROM precios
         WHERE libro_id = ?
-        ORDER BY fecha ASC
+        ORDER BY fecha ASC, id ASC
     """, (libro_id,))
     rows = cursor.fetchall()
     conn.close()
@@ -577,4 +616,4 @@ def api_precios(libro_id: int) -> Response:
 
 # ── Entry point ──
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=os.environ.get("FLASK_DEBUG") == "1", port=5000)

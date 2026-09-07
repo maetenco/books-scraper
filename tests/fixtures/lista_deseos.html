@@ -1,0 +1,57 @@
+<!--
+Fixture de HTML simplificada, basada en la estructura real de una
+página de wishlist de BuscaLibre.cl que espera `extraer_libros()`
+(scrap.py). No es HTML descargado del sitio real (no se hizo scraping
+para generar este fixture); reproduce a mano las clases CSS y la
+jerarquía de nodos que el parser busca, para poder testear sin red.
+-->
+<html>
+<body>
+<div class="misListas">
+
+  <!-- Caso 1: libro completo, con descuento, URL absoluta e imagen -->
+  <div class="productoLista">
+    <a href="https://www.buscalibre.cl/libro-1">
+      <div class="info-div">
+        <div class="title">El nombre del viento</div>
+        <div class="autor">Patrick Rothfuss</div>
+      </div>
+    </a>
+    <img src="https://img.buscalibre.cl/portada1.jpg">
+    <div class="etiquetawish"><p class="numero">20% OFF</p></div>
+    <p class="precioAntes">$19.990</p>
+    <p class="precioAhora">$15.990</p>
+  </div>
+
+  <!-- Caso 2: sin descuento, sin precio_antes, URL/imagen relativas,
+       el <a> envuelve todo el productoLista en vez del info-div -->
+  <a href="/libro-2">
+    <div class="productoLista">
+      <div class="info-div">
+        <div class="title">Fundación</div>
+        <div class="autor">Isaac Asimov</div>
+      </div>
+      <img src="/portada2.jpg">
+      <p class="precioAhora">$12.500</p>
+    </div>
+  </a>
+
+  <!-- Caso 3: sin precio (dispara lazy scraping en main()), con URL -->
+  <div class="productoLista">
+    <a href="https://www.buscalibre.cl/libro-3">
+      <div class="info-div">
+        <div class="title">Dune</div>
+        <div class="autor">Frank Herbert</div>
+      </div>
+    </a>
+  </div>
+
+  <!-- Caso 4: sin título/autor (defaults "N/A"), sin link ni imagen -->
+  <div class="productoLista">
+    <div class="info-div">
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
