@@ -3,6 +3,7 @@ import requests
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from utils import formatear_precio
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de telegram.py:
@@ -11,18 +12,19 @@ from zoneinfo import ZoneInfo
 #  [2] enviar_mensaje()     → POST a API de Telegram con
 #       parse_mode=HTML. Retorna bool según éxito.
 #  [3] formatear_precio()   → int 12990 → string "$12.990"
-#       usando punto como separador de miles (formato chileno).
+#       (importada de utils.py, compartida con dashboard.py).
 #  [4] notificar_bajas()    → Envía notificación por cada baja
-#       de precio > $5.000 CLP con detalle de ahorro.
+#       de precio > $5.000 CLP con detalle de ahorro. Recibe las
+#       bajas ya calculadas por guardar_libro() (scrap.py) — no
+#       las vuelve a calcular con una query propia (ver Fase 4,
+#       punto 16: antes había dos caminos calculando lo mismo).
 #  [5] notificar_resumen()  → Envía resumen del escaneo:
-#       libros procesados, actualizados, bajas, ofertas flash.
-#  [6] detectar_bajas()     → Consulta SQL que compara precio
-#       actual vs precio anterior del mismo libro; retorna bajas.
-#  [7] _extraer_porcentaje()→ Parsea "30% OFF" → int 30.
+#       libros procesados, bajas, ofertas flash.
+#  [6] _extraer_porcentaje()→ Parsea "30% OFF" → int 30.
 #       Helper usado por detectar_ofertas_flash().
-#  [8] detectar_ofertas_flash() → Detecta productos cuyo % de
+#  [7] detectar_ofertas_flash() → Detecta productos cuyo % de
 #       descuento saltó significativamente vs su máximo histórico.
-#  [9] notificar_ofertas_flash() → Envía alerta de oferta flash
+#  [8] notificar_ofertas_flash() → Envía alerta de oferta flash
 #       con detalle del salto porcentual.
 # ═══════════════════════════════════════════════════════════════
 
@@ -31,6 +33,10 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+# Umbral de ahorro (CLP) a partir del cual una baja de precio se
+# considera relevante y se notifica por Telegram.
+UMBRAL_BAJA_RELEVANTE_CLP = 5000
 
 
 # ── [2] enviar_mensaje: envía texto HTML al chat ──
@@ -55,15 +61,6 @@ def enviar_mensaje(texto: str) -> bool:
         return False
 
 
-# ── [3] formatear_precio: 12990 → "$12.990" ──
-# type hint: valor: int | None, retorno -> str
-# Mejora: int | None documenta que acepta nulos (precio faltante);
-#         str siempre devuelve un string, nunca rompe el template.
-def formatear_precio(valor: int | None) -> str:
-    if valor is None:
-        return "—"
-    return f"${valor:,.0f}".replace(",", ".")
-
 
 # ── [4] notificar_bajas: alerta de bajas > $5.000 ──
 # type hint: bajas: list[dict], retorno -> bool
@@ -76,7 +73,7 @@ def notificar_bajas(bajas: list[dict]) -> bool:
 
     for baja in bajas:
         ahorro = baja["precio_viejo"] - baja["precio_nuevo"]
-        if ahorro <= 5000:
+        if ahorro <= UMBRAL_BAJA_RELEVANTE_CLP:
             continue
         pct = (ahorro / baja["precio_viejo"]) * 100
 
@@ -108,52 +105,13 @@ def notificar_resumen(stats: dict) -> bool:
     texto = (
         "📊 <b>Resumen de escaneo</b>\n\n"
         f"📚 Libros procesados: {stats['libros']}\n"
-        f"🔄 Precios actualizados: {stats['actualizados']}\n"
         f"📉 Bajas detectadas: {stats['bajas']}\n"
         f"⚡ Ofertas flash: {stats.get('ofertas_flash', 0)}\n"
     )
     enviar_mensaje(texto)
 
 
-# ── [6] detectar_bajas: consulta SQL de bajas de precio ──
-# type hint: conexion: sqlite3.Connection, retorno -> list[dict]
-# Mejora: mypy valida que el parámetro sea una conexión SQLite;
-#         list[dict] indica que siempre retorna una lista (vacía si no hay bajas).
-def detectar_bajas(conexion: sqlite3.Connection) -> list[dict]:
-    cursor = conexion.cursor()
-    hoy_chile = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d")
-    cursor.execute("""
-        SELECT l.titulo, l.autor, p1.precio_actual,
-               p2.precio_actual as precio_anterior,
-               p1.descuento, p1.fecha, p1.libro_id, l.url
-        FROM precios p1
-        JOIN libros l ON l.id = p1.libro_id
-        JOIN precios p2 ON p2.id = (
-            SELECT id FROM precios
-            WHERE libro_id = p1.libro_id
-            AND fecha < p1.fecha
-            ORDER BY fecha DESC LIMIT 1
-        )
-        WHERE DATE(p1.fecha) = ?
-        AND p1.precio_actual < p2.precio_actual
-        ORDER BY (p2.precio_actual - p1.precio_actual) DESC
-    """, (hoy_chile,))
-    bajas = []
-    for r in cursor.fetchall():
-        bajas.append({
-            "titulo": r[0],
-            "autor": r[1],
-            "precio_nuevo": r[2],
-            "precio_viejo": r[3],
-            "descuento": r[4],
-            "fecha": r[5],
-            "libro_id": r[6],
-            "url": r[7],
-        })
-    return bajas
-
-
-# ── [7] _extraer_porcentaje: "30% OFF" → 30 ──
+# ── [6] _extraer_porcentaje: "30% OFF" → 30 ──
 # type hint: descuento_str: str | None, retorno -> int
 # Mejora: str | None refleja que puede recibir None desde la DB;
 #         int siempre retorna un número (0 si no puede parsear).
@@ -166,7 +124,7 @@ def _extraer_porcentaje(descuento_str: str | None) -> int:
         return 0
 
 
-# ── [8] detectar_ofertas_flash: saltos de descuento vs histórico ──
+# ── [7] detectar_ofertas_flash: saltos de descuento vs histórico ──
 # type hint: conexion: sqlite3.Connection, salto_minimo: int = 20,
 #           retorno -> list[dict]
 # Mejora: tipar salto_minimo como int evita pasar strings al SQL;
@@ -213,7 +171,7 @@ def detectar_ofertas_flash(conexion: sqlite3.Connection, salto_minimo: int = 20)
     return ofertas
 
 
-# ── [9] notificar_ofertas_flash: alerta de oferta flash ──
+# ── [8] notificar_ofertas_flash: alerta de oferta flash ──
 # type hint: ofertas: list[dict], retorno -> bool
 # Mejora: list[dict] documenta que espera el resultado de detectar_ofertas_flash();
 #         bool la hace consistente con las demás notificar_*().
