@@ -14,13 +14,7 @@ Para programar (Windows Task Scheduler):
 import asyncio
 import argparse
 import sqlite3
-import os
 from dotenv import load_dotenv
-
-load_dotenv()
-
-from scrap import main as scrap_main
-from telegram import notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_bajas, detectar_ofertas_flash
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de run.py:
@@ -28,8 +22,9 @@ from telegram import notificar_bajas, notificar_resumen, notificar_ofertas_flash
 #       y TELEGRAM_CHAT_ID desde el archivo .env.
 #  [2] scrap_main()          → Llama a main() de scrap.py con
 #       headless=True/False según flag --login.
-#  [3] detectar_bajas /      → Consultan la DB en busca de
-#      detectar_ofertas_flash   cambios de precio significativos.
+#  [3] detectar_ofertas_flash → Consulta la DB en busca de saltos
+#       de descuento; las bajas de precio vienen directo de
+#       scrap_main() (cambios), no se recalculan aparte.
 #  [4] notificar_bajas /     → Envían alertas al chat de Telegram
 #      notificar_resumen /      con formato HTML.
 #      notificar_ofertas_flash
@@ -44,7 +39,7 @@ load_dotenv()
 
 # ── [2] scrap_main: scraper principal ──
 from scrap import main as scrap_main
-from telegram import notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_bajas, detectar_ofertas_flash
+from telegram import notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_ofertas_flash
 
 
 # type hint: retorno -> None
@@ -60,23 +55,22 @@ async def run() -> None:
     cambios = await scrap_main(headless=not args.login)
 
     conn = sqlite3.connect("libros.db")
+    conn.execute("PRAGMA foreign_keys = ON")
 
-    # ── [3] Detección de bajas y ofertas flash ──
-    bajas = detectar_bajas(conn)
+    # ── [3] Bajas (de scrap_main) y ofertas flash (consulta aparte) ──
     ofertas_flash = detectar_ofertas_flash(conn)
     stats = {
         "libros": len(set(c["titulo"] for c in cambios)),
-        "actualizados": len(cambios),
-        "bajas": len(bajas),
+        "bajas": len(cambios),
         "ofertas_flash": len(ofertas_flash),
     }
 
-    print(f"\nResumen: {stats['libros']} libros, {stats['actualizados']} actualizados, {stats['bajas']} bajas, {stats['ofertas_flash']} ofertas flash")
+    print(f"\nResumen: {stats['libros']} libros, {stats['bajas']} bajas, {stats['ofertas_flash']} ofertas flash")
 
     # ── [4] Notificaciones Telegram ──
     if not args.no_telegram:
-        if bajas:
-            notificar_bajas(bajas)
+        if cambios:
+            notificar_bajas(cambios)
         else:
             print("Sin bajas de precio para notificar")
         if ofertas_flash:
