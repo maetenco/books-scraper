@@ -21,6 +21,9 @@ auth.json
 *.xls
 reporte_precios.html
 
+# ─── Auditorías / análisis internos ─────────────
+analisis_auditorias/
+
 # ─── IDE / Editor ───────────────────────────────
 .vscode/
 .idea/
