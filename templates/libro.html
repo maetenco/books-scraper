@@ -158,7 +158,7 @@
     {% endif %}
 </div>
 
-<a href="javascript:history.back()" class="btn btn-outline-secondary mt-3">← Volver</a>
+<button type="button" onclick="history.back()" class="btn btn-outline-secondary mt-3">← Volver</button>
 <button id="btnEliminar" class="btn btn-outline-danger mt-3 ms-2">🗑 Eliminar libro</button>
 {% endblock %}
 
@@ -169,7 +169,10 @@ document.addEventListener('DOMContentLoaded', function() {
     if (btnEliminar) {
         btnEliminar.addEventListener('click', function() {
             if (!confirm('¿Eliminar este libro? Se borrará todo su historial de precios.')) return;
-            fetch("{{ url_for('eliminar_libro', libro_id=libro['id']) }}", { method: 'POST' })
+            fetch("{{ url_for('eliminar_libro', libro_id=libro['id']) }}", {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
                 .then(r => r.json())
                 .then(data => {
                     if (data.ok) window.location.href = "{{ url_for('index') }}";
