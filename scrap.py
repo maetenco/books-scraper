@@ -8,6 +8,7 @@ from typing import Any
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
+from indicadores import crear_tabla_uf
 from playwright.async_api import (
     async_playwright,
     BrowserContext,
@@ -145,6 +146,9 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
     # crece indefinidamente por ser append-only); este índice evita un
     # full table scan repetido a medida que el historial crece.
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_precios_libro_fecha ON precios(libro_id, fecha)")
+
+    # Caché de UF diaria (indicadores.py) para el mínimo histórico ajustado.
+    crear_tabla_uf(conexion)
 
     conexion.commit()
 

@@ -70,6 +70,7 @@ load_dotenv()
 
 # ── [2] scrap_main: scraper principal ──
 from scrap import main as scrap_main, DB_PATH, SesionExpirada
+from indicadores import actualizar_uf
 from telegram import (
     notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_ofertas_flash, notificar_fallo,
 )
@@ -113,6 +114,12 @@ async def run(args: argparse.Namespace) -> None:
 
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
+
+    # UF del SII para el "mínimo histórico ajustado" (nunca lanza: si el
+    # SII no responde, el dashboard solo omite ese nivel).
+    nuevas_uf = actualizar_uf(conn)
+    if nuevas_uf:
+        logger.info("UF: %s valores nuevos desde el SII", nuevas_uf)
 
     # ── [3] Bajas (de scrap_main) y ofertas flash (consulta aparte) ──
     ofertas_flash = detectar_ofertas_flash(conn)

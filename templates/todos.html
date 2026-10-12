@@ -2,7 +2,7 @@
 {% block title %}Todos los libros{% endblock %}
 
 {% macro sort_url(col) %}
-  {{ url_for('ver_todos', sort=col, order='desc' if sort == col and order == 'asc' else 'asc', q=q) }}
+  {{ url_for('ver_todos', sort=col, order='desc' if sort == col and order == 'asc' else 'asc', q=q, buenos='1' if solo_buenos else None) }}
 {% endmacro %}
 
 {% macro sort_arrow(col) %}
@@ -33,9 +33,18 @@
 <form method="GET" action="{{ url_for('ver_todos') }}" class="mb-3">
     <div class="input-group">
         <input type="search" name="q" class="form-control" placeholder="Buscar por título o autor..." value="{{ q }}">
+        {% if solo_buenos %}<input type="hidden" name="buenos" value="1">{% endif %}
         <button class="btn btn-outline-primary" type="submit">Buscar</button>
         {% if q %}
         <a href="{{ url_for('ver_todos') }}" class="btn btn-outline-secondary">Limpiar</a>
+        {% endif %}
+    </div>
+    <div class="mt-2">
+        {% if solo_buenos %}
+            <a href="{{ url_for('ver_todos', q=q, sort=sort, order=order) }}" class="btn btn-success btn-sm">✓ Solo buenos precios</a>
+        {% else %}
+            <a href="{{ url_for('ver_todos', q=q, sort=sort, order=order, buenos='1') }}" class="btn btn-outline-success btn-sm"
+               title="Mínimo histórico, mínimo del año o más barato que el 80% de los días del último año">Solo buenos precios</a>
         {% endif %}
     </div>
 </form>
@@ -48,6 +57,7 @@
             <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-lista" checked> Lista</label>
             <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-precio" checked> Precio</label>
             <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-dto" checked> Dto.</label>
+            <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-eval" checked> Evaluación</label>
             <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-img" checked> Imagen</label>
             <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-link" checked> Link</label>
             <label class="d-flex align-items-center gap-1 small"><input type="checkbox" class="toggle-col" data-col="col-spark" checked> Tendencia</label>
@@ -86,6 +96,7 @@
                         Dto.{{ sort_arrow('descuento') }}
                     </a>
                 </th>
+                <th class="col-eval text-center">Evaluación</th>
                 <th class="col-min text-end">Precio más bajo</th>
                 <th class="col-fecha text-center">Desde</th>
             </tr>
@@ -144,6 +155,12 @@
                         <span class="badge bg-danger">{{ libro['descuento'] }}</span>
                     {% else %}
                         <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td class="col-eval text-center">
+                    {% set ev = evaluaciones.get(libro['id']) %}
+                    {% if ev %}
+                        <span class="badge text-bg-{{ ev['class'] }}" title="{{ ev['detail'] }}">{{ ev['label'] }}</span>
                     {% endif %}
                 </td>
                 <td class="col-min text-end font-monospace">

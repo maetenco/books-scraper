@@ -75,11 +75,11 @@
             </div>
         </div>
         {% endif %}
-        {% if recomendacion %}
-        <div class="alert alert-{{ recomendacion['class'] }} py-2 mb-3 d-flex align-items-center gap-2">
-            <span class="fw-bold">{{ recomendacion['label'] }}</span>
-            {% if recomendacion['detail'] %}
-                <small class="opacity-75">— {{ recomendacion['detail'] }}</small>
+        {% if evaluacion and evaluacion['nivel'] != 'sin_stock' %}
+        <div class="alert alert-{{ evaluacion['class'] }} py-2 mb-3">
+            <div class="fw-bold">{{ evaluacion['label'] }}</div>
+            {% if evaluacion['detail'] %}
+                <small class="opacity-75">{{ evaluacion['detail'] }}</small>
             {% endif %}
         </div>
         {% endif %}
@@ -208,6 +208,19 @@ document.addEventListener('DOMContentLoaded', function() {
                     yAxisID: 'y',
                 }
             ];
+
+            const minAnual = {{ (evaluacion or {}).get('min_anual') | tojson }};
+            if (minAnual) {
+                datasets.push({
+                    label: 'Mínimo del año ($)',
+                    data: data.fechas.map(() => minAnual),
+                    borderColor: '#20c997',
+                    borderDash: [2, 4],
+                    pointRadius: 0,
+                    fill: false,
+                    yAxisID: 'y',
+                });
+            }
 
             if (hasDescuentos) {
                 datasets.push({

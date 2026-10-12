@@ -59,6 +59,40 @@
 </div>
 {% endif %}
 
+{% if eventos_grafico %}
+<div class="card bg-dark border-secondary mb-4">
+    <div class="card-header border-secondary d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <h5 class="mb-0">🛍️ Rebajas de la tienda</h5>
+        {% if estado_hoy %}
+            {% if estado_hoy['es_evento'] %}
+                <span class="badge text-bg-success">Último escaneo: hay rebaja</span>
+            {% else %}
+                <span class="badge text-bg-secondary">
+                    Último escaneo: {{ "%.1f"|format(estado_hoy['descuento_medio'])|replace('.', ',') }}% (habitual {{ "%.1f"|format(estado_hoy['habitual'])|replace('.', ',') }}%)
+                </span>
+            {% endif %}
+        {% endif %}
+    </div>
+    <div class="card-body">
+        <p class="small text-secondary mb-2">
+            Descuento medio de todo tu catálogo en cada escaneo. Un día es "buena rebaja" cuando supera
+            claramente lo habitual (línea punteada); mira el % que fija la tienda, no el precio en pesos,
+            así que no lo confunden las variaciones del dólar.
+        </p>
+        <canvas id="eventosChart" height="90"></canvas>
+        {% if textos_eventos %}
+        <ul class="list-unstyled mt-3 mb-0">
+            {% for t in textos_eventos %}
+            <li class="mb-1">✅ {{ t }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-secondary small mt-3 mb-0">Aún no se detectan días de rebaja sobre lo habitual.</p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
 <div class="row g-4">
 
     <div class="col-lg-6">
@@ -128,8 +162,8 @@
                             <td class="text-secondary">{{ loop.index }}</td>
                             <td{% if r['listas'] %} title="{{ r['listas'] }}"{% endif %}>{{ r['titulo'] | capitalize }}</td>
                             <td class="text-center"><span class="badge bg-danger">{{ r['descuento'] }}</span></td>
-                            <td class="text-end text-secondary font-monospace">${{ "{:,.0f}".format(r['precio_antes']).replace(',', '.') }}</td>
-                            <td class="text-end text-success font-monospace">${{ "{:,.0f}".format(r['precio_actual']).replace(',', '.') }}</td>
+                            <td class="text-end text-secondary font-monospace">{{ r['precio_antes']|precio }}</td>
+                            <td class="text-end text-success font-monospace">{{ r['precio_actual']|precio }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -166,4 +200,53 @@
 </div>
 
 <a href="/" class="btn btn-outline-secondary mt-4">← Volver</a>
+{% endblock %}
+
+{% block scripts %}
+{% if eventos_grafico %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const eventos = {{ eventos_grafico | tojson }};
+    const etiquetas = eventos.map(e => e.dia.slice(8, 10) + '/' + e.dia.slice(5, 7));
+    new Chart(document.getElementById('eventosChart').getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: etiquetas,
+            datasets: [
+                {
+                    label: 'Descuento medio (%)',
+                    data: eventos.map(e => e.descuento_medio),
+                    borderColor: '#0dcaf0',
+                    backgroundColor: 'rgba(13, 202, 240, 0.1)',
+                    fill: true,
+                    tension: 0.25,
+                    pointRadius: eventos.map(e => e.es_evento ? 6 : 2),
+                    pointBackgroundColor: eventos.map(e => e.es_evento ? '#198754' : '#0dcaf0'),
+                },
+                {
+                    label: 'Umbral de rebaja',
+                    data: eventos.map(e => e.umbral),
+                    borderColor: '#6c757d',
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    fill: false,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { labels: { color: '#dee2e6' } },
+                tooltip: { callbacks: { label: c => c.dataset.label + ': ' + (c.parsed.y ?? 0).toFixed(1) + '%' } },
+            },
+            scales: {
+                x: { ticks: { color: '#adb5bd' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#adb5bd', callback: v => v + '%' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            },
+        },
+    });
+});
+</script>
+{% endif %}
 {% endblock %}
