@@ -1,9 +1,14 @@
+import html
+import logging
 import os
+import time
 import requests
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from utils import formatear_precio
+
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de telegram.py:
@@ -20,6 +25,8 @@ from utils import formatear_precio
 #       punto 16: antes había dos caminos calculando lo mismo).
 #  [5] notificar_resumen()  → Envía resumen del escaneo:
 #       libros procesados, bajas, ofertas flash.
+#  [5b] notificar_fallo()   → Avisa si la corrida falló o si la sesión
+#       de BuscaLibre expiró (hay que correr run.py --login).
 #  [6] _extraer_porcentaje()→ Parsea "30% OFF" → int 30.
 #       Helper usado por detectar_ofertas_flash().
 #  [7] detectar_ofertas_flash() → Detecta productos cuyo % de
@@ -39,26 +46,66 @@ API_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 UMBRAL_BAJA_RELEVANTE_CLP = 5000
 
 
+# Telegram limita a ~1 mensaje por segundo por chat; ráfagas más rápidas
+# reciben HTTP 429 y el mensaje se pierde.
+PAUSA_ENTRE_MENSAJES_SEG = 1.0
+# Tope de espera ante un 429 (Telegram indica retry_after en segundos).
+MAX_ESPERA_RETRY_SEG = 60
+_ultimo_envio = 0.0
+
+
+# type hint: valor: object, retorno -> str
+# Mejora: con parse_mode=HTML, un título con "&" o "<" hacía que Telegram
+#         rechazara el mensaje entero ("can't parse entities"). Todo texto
+#         que viene de BuscaLibre/DB debe pasar por aquí antes de interpolarse.
+def esc(valor: object) -> str:
+    return html.escape(str(valor), quote=True)
+
+
 # ── [2] enviar_mensaje: envía texto HTML al chat ──
 # type hint: texto: str, retorno -> bool
 # Mejora: str evita pasar números u objetos por error;
 #         bool documenta que retorna éxito/fracaso de la API.
 def enviar_mensaje(texto: str) -> bool:
+    global _ultimo_envio
     if not TOKEN or not CHAT_ID:
-        print("TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados")
+        logger.warning("TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados")
         return False
-    try:
-        r = requests.post(API_URL, json={
-            "chat_id": CHAT_ID,
-            "text": texto,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }, timeout=10)
-        r.raise_for_status()
+
+    for intento in range(2):  # 1 envío + 1 reintento si Telegram pide esperar (429)
+        espera = PAUSA_ENTRE_MENSAJES_SEG - (time.monotonic() - _ultimo_envio)
+        if espera > 0:
+            time.sleep(espera)
+        try:
+            r = requests.post(API_URL, json={
+                "chat_id": CHAT_ID,
+                "text": texto,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }, timeout=10)
+            _ultimo_envio = time.monotonic()
+        except requests.RequestException as e:
+            logger.error("Error de red enviando mensaje Telegram: %s", e)
+            return False
+
+        if r.status_code == 429 and intento == 0:
+            try:
+                retry_after = int(r.json().get("parameters", {}).get("retry_after", 1))
+            except ValueError:
+                retry_after = 1
+            logger.warning("Telegram pidió esperar %ss (429), reintentando", retry_after)
+            time.sleep(min(retry_after, MAX_ESPERA_RETRY_SEG))
+            continue
+        if not r.ok:
+            # La descripción de Telegram dice el motivo real (p. ej. HTML inválido).
+            try:
+                detalle = r.json().get("description", r.text)
+            except ValueError:
+                detalle = r.text
+            logger.error("Telegram rechazó el mensaje (HTTP %s): %s", r.status_code, detalle)
+            return False
         return True
-    except Exception as e:
-        print(f"Error enviando mensaje Telegram: {e}")
-        return False
+    return False
 
 
 
@@ -68,7 +115,7 @@ def enviar_mensaje(texto: str) -> bool:
 #         bool indica que la función siempre retorna True.
 def notificar_bajas(bajas: list[dict]) -> bool:
     if not bajas:
-        print("No hay bajas de precio relevantes para notificar")
+        logger.info("No hay bajas de precio relevantes para notificar")
         return True
 
     for baja in bajas:
@@ -79,17 +126,17 @@ def notificar_bajas(bajas: list[dict]) -> bool:
 
         mensaje = (
             "📉 <b>BAJÓ DE PRECIO</b>\n\n"
-            f"📖 <b>{baja['titulo'].title()}</b>\n"
-            f"✍️ {baja['autor'].title()}\n\n"
+            f"📖 <b>{esc(baja['titulo'].title())}</b>\n"
+            f"✍️ {esc(baja['autor'].title())}\n\n"
             f"<s>{formatear_precio(baja['precio_viejo'])}</s>\n"
             f"<b>{formatear_precio(baja['precio_nuevo'])}</b>\n"
             f"💰 Ahorro: <b>{formatear_precio(ahorro)}</b> ({pct:.0f}% menos)\n"
         )
         if baja["descuento"] and baja["descuento"] != "Sin descuento":
-            mensaje += f"🏷️ Descuento: {baja['descuento']}\n"
+            mensaje += f"🏷️ Descuento: {esc(baja['descuento'])}\n"
 
         if baja.get("url"):
-            mensaje += f"\n🔗 <a href='{baja['url']}'>Ver en BuscaLibre</a>"
+            mensaje += f"\n🔗 <a href=\"{esc(baja['url'])}\">Ver en BuscaLibre</a>"
         else:
             mensaje += f"\n🔗 <a href='https://www.buscalibre.cl'>BuscaLibre</a>"
         enviar_mensaje(mensaje)
@@ -110,6 +157,27 @@ def notificar_resumen(stats: dict) -> bool:
         f"⚡ Ofertas flash: {stats.get('ofertas_flash', 0)}\n"
     )
     enviar_mensaje(texto)
+
+
+# ── [5b] notificar_fallo: aviso de salud del scraper ──
+# type hint: error: BaseException, sesion_expirada: bool, retorno -> bool
+# Mejora: antes un fallo (sesión vencida, sin red) solo quedaba en el log
+#         y nadie se enteraba hasta abrir el dashboard días después.
+def notificar_fallo(error: BaseException, sesion_expirada: bool = False) -> bool:
+    if sesion_expirada:
+        texto = (
+            "🔑 <b>Sesión de BuscaLibre expirada</b>\n\n"
+            "No se pudieron abrir tus listas de deseos.\n"
+            "Ejecuta <code>python run.py --login</code> para volver a iniciar sesión.\n\n"
+            f"<i>{esc(str(error)[:300])}</i>"
+        )
+    else:
+        texto = (
+            "❌ <b>El scraper falló</b>\n\n"
+            f"<code>{esc(type(error).__name__)}</code>: {esc(str(error)[:300])}\n\n"
+            "Detalle completo en scraper.log"
+        )
+    return enviar_mensaje(texto)
 
 
 # ── [6] _extraer_porcentaje: "30% OFF" → 30 ──
@@ -183,15 +251,15 @@ def notificar_ofertas_flash(ofertas: list[dict]) -> bool:
         salto = oferta["dcto_actual"] - oferta["dcto_max_anterior"]
         mensaje = (
             "⚡ <b>OFERTA FLASH</b>\n\n"
-            f"📖 <b>{oferta['titulo'].title()}</b>\n"
-            f"✍️ {oferta['autor'].title()}\n\n"
-            f"🏷️ <b>{oferta['descuento']}</b>\n"
+            f"📖 <b>{esc(oferta['titulo'].title())}</b>\n"
+            f"✍️ {esc(oferta['autor'].title())}\n\n"
+            f"🏷️ <b>{esc(oferta['descuento'])}</b>\n"
             f"💰 {formatear_precio(oferta['precio_actual'])}"
         )
         if oferta["precio_antes"]:
             mensaje += f" <s>{formatear_precio(oferta['precio_antes'])}</s>"
         mensaje += f"\n📈 Salto de {salto}% vs su mejor oferta anterior ({oferta['dcto_max_anterior']}%)"
         if oferta["url"]:
-            mensaje += f"\n\n🔗 <a href='{oferta['url']}'>Ver en BuscaLibre</a>"
+            mensaje += f"\n\n🔗 <a href=\"{esc(oferta['url'])}\">Ver en BuscaLibre</a>"
         enviar_mensaje(mensaje)
     return True

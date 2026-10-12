@@ -63,6 +63,12 @@ BACKUPS_A_MANTENER = 7  # backups diarios más recientes que se conservan
 # libros de la vista por un fallo transitorio).
 FRACCION_MINIMA_SINCRONIZAR = 0.5
 
+
+class SesionExpirada(Exception):
+    """No hay sesión guardada o BuscaLibre no muestra las listas de deseos
+    (típicamente porque auth.json venció). run.py la usa para avisar por
+    Telegram que hay que volver a correr `run.py --login`."""
+
 # Cuántas páginas de producto se abren en paralelo durante el lazy
 # scraping (extraer_precio_producto abre una página nueva por libro;
 # cada una es independiente, pero no conviene abrir decenas a la vez
@@ -204,6 +210,7 @@ def limpiar_precio(precioTexto: str | None) -> int | None:
 # Mejora: el parámetro BrowserContext es el tipo exacto de Playwright;
 #         al tipar timeout_sec como int mypy evita pasar strings.
 async def extraer_precio_producto(url: str, browser_context: BrowserContext, timeout_sec: int = 60) -> dict | None:
+    page_ctx = None
     try:
         page_ctx = await browser_context.new_page()
         try:
@@ -219,51 +226,81 @@ async def extraer_precio_producto(url: str, browser_context: BrowserContext, tim
             pass
 
         html = await page_ctx.content()
-        await page_ctx.close()
-
-        if "Sin Stock" in html or "sin stock" in html:
-            return {"sin_stock": True}
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        opcion = soup.find("div", class_="opcionPrecio", attrs={"data-form": "1"})
-        if opcion:
-            raw = opcion.get("data-despacho-payload")
-            if raw:
-                payload = json.loads(raw)
-                p_actual_raw = payload.get("precio_moneda_raw")
-                p_antes_raw = payload.get("precio_tachado_moneda_raw")
-                pct_dcto = payload.get("porcentaje_descuento")
-
-                if p_actual_raw:
-                    precio_actual = int(float(p_actual_raw))
-                    precio_antes = int(float(p_antes_raw)) if p_antes_raw else None
-                    descuento = f"{int(pct_dcto)}%" if pct_dcto is not None else "Sin descuento"
-                    return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
-
-        col_precio = soup.find("div", class_="colPrecio")
-        if col_precio:
-            ped = col_precio.find("span", class_="ped")
-            pvp = col_precio.find("span", class_="pvp")
-            if ped:
-                precio_actual = limpiar_precio(ped.get_text(strip=True))
-                precio_antes = limpiar_precio(pvp.get_text(strip=True)) if pvp else None
-                col_dcto = soup.find("div", class_="colDescuento")
-                descuento = col_dcto.get_text(strip=True) if col_dcto else "Sin descuento"
-                return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
-
-        col_precios = soup.find("div", class_="col-precios")
-        if col_precios:
-            p_ahora = col_precios.find("p", class_="precioAhora")
-            p_antes = col_precios.find("p", class_="precioAntes")
-            if p_ahora:
-                precio_actual = limpiar_precio(p_ahora.get_text(strip=True))
-                precio_antes = limpiar_precio(p_antes.get_text(strip=True)) if p_antes else None
-                descuento = "Sin descuento"
-                return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
-
+        return parsear_pagina_producto(html)
     except (PlaywrightError, json.JSONDecodeError, AttributeError, KeyError, ValueError) as e:
         logger.error("Error scraping %s: %s", url, e)
+        return None
+    finally:
+        # Antes la página solo se cerraba en el camino feliz: un error
+        # entre new_page() y close() la dejaba abierta toda la corrida.
+        if page_ctx is not None:
+            try:
+                await page_ctx.close()
+            except PlaywrightError:
+                pass
+
+
+# type hint: soup: BeautifulSoup, retorno -> bool
+def _marcado_sin_stock(soup: BeautifulSoup) -> bool:
+    """True si la página marca el producto como "Sin Stock". En el HTML
+    real la marca es <strong>…Sin Stock</strong> dentro de div.info-libro;
+    se busca como texto exacto de un elemento (no substring de todo el
+    HTML, que podía coincidir con carruseles u otros textos).
+    """
+    zona = soup.find("div", class_="info-libro") or soup
+    return any(
+        el.get_text(strip=True).lower() == "sin stock"
+        for el in zona.find_all(["strong", "div", "span", "p"])
+    )
+
+
+# ── [4b] parsear_pagina_producto: HTML de producto → precio ──
+# type hint: html: str, retorno -> dict | None
+# Mejora: función pura (sin Playwright) → testeable con fixtures reales.
+def parsear_pagina_producto(html: str) -> dict | None:
+    """Extrae precio de la página de producto. Primero busca un precio:
+    si lo hay, el libro está disponible aunque aparezca "Sin Stock" en
+    otra parte de la página. Solo sin precio se mira la marca de stock.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    opcion = soup.find("div", class_="opcionPrecio", attrs={"data-form": "1"})
+    if opcion:
+        raw = opcion.get("data-despacho-payload")
+        if raw:
+            payload = json.loads(raw)
+            p_actual_raw = payload.get("precio_moneda_raw")
+            p_antes_raw = payload.get("precio_tachado_moneda_raw")
+            pct_dcto = payload.get("porcentaje_descuento")
+
+            if p_actual_raw:
+                precio_actual = int(float(p_actual_raw))
+                precio_antes = int(float(p_antes_raw)) if p_antes_raw else None
+                descuento = f"{int(pct_dcto)}%" if pct_dcto is not None else "Sin descuento"
+                return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
+
+    col_precio = soup.find("div", class_="colPrecio")
+    if col_precio:
+        ped = col_precio.find("span", class_="ped")
+        pvp = col_precio.find("span", class_="pvp")
+        if ped:
+            precio_actual = limpiar_precio(ped.get_text(strip=True))
+            precio_antes = limpiar_precio(pvp.get_text(strip=True)) if pvp else None
+            col_dcto = soup.find("div", class_="colDescuento")
+            descuento = col_dcto.get_text(strip=True) if col_dcto else "Sin descuento"
+            return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
+
+    col_precios = soup.find("div", class_="col-precios")
+    if col_precios:
+        p_ahora = col_precios.find("p", class_="precioAhora")
+        p_antes = col_precios.find("p", class_="precioAntes")
+        if p_ahora:
+            precio_actual = limpiar_precio(p_ahora.get_text(strip=True))
+            precio_antes = limpiar_precio(p_antes.get_text(strip=True)) if p_antes else None
+            descuento = "Sin descuento"
+            return {"precio_actual": precio_actual, "precio_antes": precio_antes, "descuento": descuento}
+
+    if _marcado_sin_stock(soup):
+        return {"sin_stock": True}
     return None
 
 
@@ -573,12 +610,23 @@ async def main(headless: bool = False) -> tuple[list[dict], int]:
             await context.storage_state(path=AUTH_FILE)
             print(f"Sesión guardada en {AUTH_FILE}")
         else:
-            print("No hay sesión guardada. Ejecuta primero sin --headless para hacer login.")
             conexion.close()
-            return [], 0
+            await browser.close()
+            raise SesionExpirada(f"No hay sesión guardada ({AUTH_FILE}). Ejecuta run.py --login.")
 
         await page.goto("https://www.buscalibre.cl/v2/u/dashboard#lista-deseos")
-        await page.wait_for_selector("div.misListas")
+        try:
+            await page.wait_for_selector("div.misListas")
+        except PlaywrightTimeoutError:
+            # Sin sesión válida BuscaLibre no muestra las listas (redirige al
+            # login). También podría ser un cambio de HTML: el mensaje lo dice.
+            url_actual = page.url
+            conexion.close()
+            await browser.close()
+            raise SesionExpirada(
+                f"No aparecieron las listas de deseos (url: {url_actual}). "
+                "Probablemente la sesión expiró o cambió la página."
+            ) from None
 
         ids_listas = await obtener_ids_listas(page)
         cambios = []
@@ -694,5 +742,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Books scraper for BuscaLibre")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     args = parser.parse_args()
-    _cambios, _total = asyncio.run(main(headless=args.headless))
+    try:
+        _cambios, _total = asyncio.run(main(headless=args.headless))
+    except SesionExpirada as e:
+        print(e)
+        raise SystemExit(1)
     print(f"\nTotal libros escaneados: {_total}, bajas: {len(_cambios)}")

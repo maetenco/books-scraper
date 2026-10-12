@@ -28,3 +28,10 @@ jobs:
 
       - name: Run test
         run: pytest tests/ -v
+
+      # Falla el CI si alguna dependencia fijada tiene una vulnerabilidad
+      # conocida (base de datos pública de PyPA/OSV, gratis).
+      - name: Audit dependencies
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
