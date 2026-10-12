@@ -69,20 +69,28 @@ logger = logging.getLogger("run")
 load_dotenv()
 
 # ── [2] scrap_main: scraper principal ──
-from scrap import main as scrap_main, DB_PATH
-from telegram import notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_ofertas_flash
+from scrap import main as scrap_main, DB_PATH, SesionExpirada
+from telegram import (
+    notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_ofertas_flash, notificar_fallo,
+)
 
 
-# type hint: retorno -> None
-# Mejora: None indica que run() ejecuta efectos secundarios
-#         (scraping, notificaciones) sin retornar valor útil.
-async def run() -> None:
-    # ── [5] Argumentos CLI ──
+# ── [5] Argumentos CLI ──
+# type hint: argv: list[str] | None, retorno -> argparse.Namespace
+# Mejora: separado de run() para que el bloque __main__ sepa si debe
+#         avisar fallos por Telegram (--no-telegram) aunque run() reviente.
+def parsear_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Books scraper runner")
     parser.add_argument("--no-telegram", action="store_true", help="Skip Telegram notifications")
     parser.add_argument("--login", action="store_true", help="Run with browser (save session)")
     parser.add_argument("--force", action="store_true", help="Run even if it already ran today")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+# type hint: args: argparse.Namespace, retorno -> None
+# Mejora: None indica que run() ejecuta efectos secundarios
+#         (scraping, notificaciones) sin retornar valor útil.
+async def run(args: argparse.Namespace) -> None:
 
     # ── Evita correr dos veces el mismo día ──
     # El Task Scheduler dispara run.py por horario fijo (10:00) y también
@@ -97,6 +105,10 @@ async def run() -> None:
         return
 
     cambios, total_escaneados = await scrap_main(headless=not args.login)
+    # Una corrida que no escaneó ningún libro no cuenta como "ya corrió hoy":
+    # así el siguiente disparo del Task Scheduler lo vuelve a intentar.
+    if total_escaneados == 0:
+        raise RuntimeError("La corrida no escaneó ningún libro (¿listas vacías o página cambió?)")
     marcar_ejecucion_hoy()
 
     conn = sqlite3.connect(DB_PATH)
@@ -134,8 +146,16 @@ async def run() -> None:
 
 # ── [6] Entry point asíncrono ──
 if __name__ == "__main__":
+    _args = parsear_args()
     try:
-        asyncio.run(run())
-    except Exception:
+        asyncio.run(run(_args))
+    except SesionExpirada as e:
+        logger.error("Sesión expirada: %s", e)
+        if not _args.no_telegram:
+            notificar_fallo(e, sesion_expirada=True)
+        sys.exit(1)
+    except Exception as e:
         logger.exception("Corrida abortada por excepción no controlada")
+        if not _args.no_telegram:
+            notificar_fallo(e)
         sys.exit(1)

@@ -132,3 +132,46 @@ def test_extraer_precio_producto_fallback_colprecios():
 def test_extraer_precio_producto_sin_stock():
     resultado = _extraer_precio("producto_sin_stock.html")
     assert resultado == {"sin_stock": True}
+
+
+# ── Fixtures con HTML real de BuscaLibre (2026-10-12) ──
+
+def test_parsear_sin_stock_real():
+    from scrap import parsear_pagina_producto
+    assert parsear_pagina_producto(_leer_fixture("producto_sin_stock_real.html")) == {"sin_stock": True}
+
+
+def test_parsear_disponible_ignora_sin_stock_de_carrusel():
+    # Un "Sin Stock" de otro libro (carrusel de recomendados) no debe
+    # marcar como agotado un producto que sí tiene precio.
+    from scrap import parsear_pagina_producto
+    resultado = parsear_pagina_producto(_leer_fixture("producto_disponible_con_carrusel_sin_stock.html"))
+    assert resultado == {"precio_actual": 46450, "precio_antes": 92890, "descuento": "50%"}
+
+
+def test_parsear_no_marca_sin_stock_por_substring():
+    # "sin stock" dentro de un texto más largo no es la marca de agotado.
+    from scrap import parsear_pagina_producto
+    html = "<html><body><p>Consulta disponibilidad: avisamos si queda sin stock pronto.</p></body></html>"
+    assert parsear_pagina_producto(html) is None
+
+
+def test_extraer_precio_cierra_la_pagina_aunque_falle_la_navegacion():
+    from playwright.async_api import Error as PlaywrightError
+
+    class PaginaQueFalla(FakePage):
+        cerrada = False
+
+        async def goto(self, url, wait_until=None, timeout=None):
+            raise PlaywrightError("net::ERR_NAME_NOT_RESOLVED")
+
+        async def close(self):
+            PaginaQueFalla.cerrada = True
+
+    class Contexto(FakeContext):
+        async def new_page(self):
+            return PaginaQueFalla(self._html)
+
+    resultado = asyncio.run(extraer_precio_producto("https://www.buscalibre.cl/fake", Contexto("")))
+    assert resultado is None
+    assert PaginaQueFalla.cerrada
