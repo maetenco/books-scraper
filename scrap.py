@@ -479,10 +479,13 @@ async def _corregir_precio_libro(
 
 
 # ── [8] main: orquestador del scraping completo ──
-# type hint: headless: bool = False, retorno -> list[dict]
+# type hint: headless: bool = False, retorno -> tuple[list[dict], int]
 # Mejora: bool restringe el parámetro a True/False únicamente;
-#         list[dict] documenta que retorna los cambios detectados.
-async def main(headless: bool = False) -> list[dict]:
+#         la tupla documenta que retorna tanto los cambios detectados
+#         como el total de libros únicos scrapeados (para no confundir
+#         "cuántos bajaron de precio" con "cuántos se procesaron" en
+#         el resumen que ve run.py/telegram.py).
+async def main(headless: bool = False) -> tuple[list[dict], int]:
     conexion = sqlite3.connect(DB_PATH)
     crear_tablas(conexion)
     hacer_backup_db(conexion)
@@ -509,13 +512,17 @@ async def main(headless: bool = False) -> list[dict]:
         else:
             print("No hay sesión guardada. Ejecuta primero sin --headless para hacer login.")
             conexion.close()
-            return []
+            return [], 0
 
         await page.goto("https://www.buscalibre.cl/v2/u/dashboard#lista-deseos")
         await page.wait_for_selector("div.misListas")
 
         ids_listas = await obtener_ids_listas(page)
         cambios = []
+        # Un mismo libro puede estar en varias listas; se cuenta una sola
+        # vez por (titulo, autor) para que "total scrapeado" refleje
+        # libros únicos y no se infle con el solapamiento entre listas.
+        libros_escaneados: set[tuple[str, str]] = set()
 
         for lista_id in ids_listas:
             print(f"\nProcesando lista ID: {lista_id}")
@@ -595,6 +602,7 @@ async def main(headless: bool = False) -> list[dict]:
             print(f"Precios corregidos: {corregidos} de {len(datos_lista)}")
 
             for libro in datos_lista:
+                libros_escaneados.add((libro["titulo"], libro["autor"]))
                 cambio = guardar_libro(conexion, libro, id_lista_db)
                 if cambio:
                     cambios.append(cambio)
@@ -604,11 +612,12 @@ async def main(headless: bool = False) -> list[dict]:
         await browser.close()
         conexion.close()
 
-    return cambios
+    return cambios, len(libros_escaneados)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Books scraper for BuscaLibre")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     args = parser.parse_args()
-    asyncio.run(main(headless=args.headless))
+    _cambios, _total = asyncio.run(main(headless=args.headless))
+    print(f"\nTotal libros escaneados: {_total}, bajas: {len(_cambios)}")

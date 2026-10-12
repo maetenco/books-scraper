@@ -8,13 +8,44 @@ Uso:
 
 Para programar (Windows Task Scheduler):
     Action: python C:\ruta\run.py
-    Trigger: diario a las 10:00
+    Trigger 1: diario a las 10:00
+    Trigger 2: al iniciar sesión (con retraso ~5 min), por si el equipo
+               estaba apagado/suspendido a la hora fija.
+    (run.py evita correr dos veces el mismo día vía .last_run, así que
+     es seguro combinar ambos triggers en la misma tarea.)
+
+Logging:
+    Task Scheduler no captura stdout, así que todo lo que antes solo
+    se imprimía por consola se perdía cuando corría desatendido. Acá
+    se agrega un log rotativo (scraper.log) con lo mismo que se ve en
+    consola, más el traceback completo si algo revienta, para poder
+    diagnosticar corridas fallidas después del hecho.
 """
 
 import asyncio
 import argparse
+import logging
 import sqlite3
+import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
 from dotenv import load_dotenv
+
+from utils import ya_corrio_hoy, marcar_ejecucion_hoy
+
+# ── Logging: consola (igual que antes) + archivo rotativo ──
+_LOG_FILE = Path(__file__).parent / "scraper.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        RotatingFileHandler(_LOG_FILE, maxBytes=2_000_000, backupCount=5, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("run")
 
 # ═══════════════════════════════════════════════════════════════
 # Conceptos de run.py:
@@ -50,9 +81,23 @@ async def run() -> None:
     parser = argparse.ArgumentParser(description="Books scraper runner")
     parser.add_argument("--no-telegram", action="store_true", help="Skip Telegram notifications")
     parser.add_argument("--login", action="store_true", help="Run with browser (save session)")
+    parser.add_argument("--force", action="store_true", help="Run even if it already ran today")
     args = parser.parse_args()
 
-    cambios = await scrap_main(headless=not args.login)
+    # ── Evita correr dos veces el mismo día ──
+    # El Task Scheduler dispara run.py por horario fijo (10:00) y también
+    # al iniciar sesión (por si el equipo estaba apagado/suspendido a esa
+    # hora). Si ambos disparan el mismo día, el segundo se corta acá.
+    logger.info("=== Inicio de corrida (args: %s) ===", vars(args))
+
+    if args.force:
+        logger.info("--force: se ignora el chequeo de ejecución diaria")
+    elif ya_corrio_hoy():
+        logger.info("Ya se ejecutó hoy, se omite este disparo (usar --force para forzar)")
+        return
+
+    cambios, total_escaneados = await scrap_main(headless=not args.login)
+    marcar_ejecucion_hoy()
 
     conn = sqlite3.connect("libros.db")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -60,28 +105,37 @@ async def run() -> None:
     # ── [3] Bajas (de scrap_main) y ofertas flash (consulta aparte) ──
     ofertas_flash = detectar_ofertas_flash(conn)
     stats = {
-        "libros": len(set(c["titulo"] for c in cambios)),
+        "total_escaneados": total_escaneados,
+        "libros_con_baja": len(set(c["titulo"] for c in cambios)),
         "bajas": len(cambios),
         "ofertas_flash": len(ofertas_flash),
     }
 
-    print(f"\nResumen: {stats['libros']} libros, {stats['bajas']} bajas, {stats['ofertas_flash']} ofertas flash")
+    logger.info(
+        "Resumen: %s libros escaneados, %s con baja de precio (%s bajas), %s ofertas flash",
+        stats["total_escaneados"], stats["libros_con_baja"], stats["bajas"], stats["ofertas_flash"],
+    )
 
     # ── [4] Notificaciones Telegram ──
     if not args.no_telegram:
         if cambios:
             notificar_bajas(cambios)
         else:
-            print("Sin bajas de precio para notificar")
+            logger.info("Sin bajas de precio para notificar")
         if ofertas_flash:
             notificar_ofertas_flash(ofertas_flash)
         else:
-            print("Sin ofertas flash para notificar")
+            logger.info("Sin ofertas flash para notificar")
         notificar_resumen(stats)
 
     conn.close()
+    logger.info("=== Corrida finalizada OK ===")
 
 
 # ── [6] Entry point asíncrono ──
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except Exception:
+        logger.exception("Corrida abortada por excepción no controlada")
+        sys.exit(1)

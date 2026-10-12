@@ -104,7 +104,8 @@ def notificar_bajas(bajas: list[dict]) -> bool:
 def notificar_resumen(stats: dict) -> bool:
     texto = (
         "📊 <b>Resumen de escaneo</b>\n\n"
-        f"📚 Libros procesados: {stats['libros']}\n"
+        f"📚 Libros escaneados: {stats.get('total_escaneados', '—')}\n"
+        f"🔻 Libros con baja de precio: {stats.get('libros_con_baja', stats.get('libros', 0))}\n"
         f"📉 Bajas detectadas: {stats['bajas']}\n"
         f"⚡ Ofertas flash: {stats.get('ofertas_flash', 0)}\n"
     )

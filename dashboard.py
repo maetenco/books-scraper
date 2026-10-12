@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 #       gráfico Chart.js y recomendación de compra.
 # [11] eliminar_libro()       → Ruta POST "/libro/<id>/eliminar":
 #       borra libro y su historial de precios.
+# [11b] eliminar_lista()      → Ruta POST "/lista/<id>/eliminar":
+#       borra una lista (wishlist) y sus vínculos, sin tocar los libros.
 # [12] api_precios()          → Ruta "/api/precios/<id>": JSON
 #       con historial para el gráfico Chart.js.
 # ═══════════════════════════════════════════════════════════════
@@ -575,6 +577,36 @@ def eliminar_libro(libro_id: int) -> Response:
         conn.rollback()
         conn.close()
         logger.warning("No se pudo eliminar libro_id=%s: %s", libro_id, e)
+        return jsonify({"ok": False, "error": "Base de datos ocupada, intenta de nuevo"}), 503
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# ── [11b] eliminar_lista: borra una lista vía POST ──
+# type hint: lista_id: int, retorno -> flask.Response
+# Mejora: jsonify() retorna Response; no borra los libros, solo la lista
+#         y sus vínculos en libros_listas (los libros quedan igual,
+#         aunque queden sin ninguna lista asociada).
+@app.route("/lista/<int:lista_id>/eliminar", methods=["POST"])
+def eliminar_lista(lista_id: int) -> Response:
+    # Mitigación CSRF simple: un <form> cross-site no puede setear
+    # headers custom, solo fetch/XHR del propio origen puede.
+    if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+        return jsonify({"ok": False, "error": "Solicitud no permitida"}), 403
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM listas WHERE id = ?", (lista_id,))
+    if cursor.fetchone() is None:
+        conn.close()
+        return jsonify({"ok": False, "error": "Lista no encontrada"}), 404
+    try:
+        cursor.execute("DELETE FROM libros_listas WHERE lista_id = ?", (lista_id,))
+        cursor.execute("DELETE FROM listas WHERE id = ?", (lista_id,))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        conn.rollback()
+        conn.close()
+        logger.warning("No se pudo eliminar lista_id=%s: %s", lista_id, e)
         return jsonify({"ok": False, "error": "Base de datos ocupada, intenta de nuevo"}), 503
     conn.close()
     return jsonify({"ok": True})
