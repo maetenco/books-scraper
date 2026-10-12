@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, render_template, jsonify, request, Response
 from utils import formatear_precio
 
@@ -46,7 +47,8 @@ logger = logging.getLogger(__name__)
 
 # ── [1] app Flask ──
 app = Flask(__name__)
-DB_PATH = "libros.db"
+# Misma variable que scrap.py: permite levantar el dashboard sobre una copia.
+DB_PATH = os.environ.get("BOOKS_DB_PATH", "libros.db")
 
 
 # ── [2] get_db: conexión SQLite con row_factory ──
@@ -306,13 +308,12 @@ def export_csv() -> Response:
     cursor.execute(f"""
         SELECT lib.id, lib.titulo, lib.autor,
                p.precio_actual, p.precio_antes, p.descuento, p.fecha,
-               (SELECT MIN(precio_actual) FROM precios WHERE libro_id = lib.id) as precio_min,
+               (SELECT MIN(precio_actual) FROM precios WHERE libro_id = lib.id AND estado = 'disponible') as precio_min,
                (SELECT GROUP_CONCAT(l.nombre, ' | ') FROM listas l
                 JOIN libros_listas ll2 ON ll2.lista_id = l.id
                 WHERE ll2.libro_id = lib.id) as listas
         FROM libros lib
         LEFT JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
-
         ORDER BY lib.titulo
     """)
     rows = cursor.fetchall()
@@ -362,49 +363,65 @@ def stats() -> str:
     """)
     primera_fecha = cursor.fetchone()[0]
 
+    # Cambios reales de precio (el precio difiere del registro anterior),
+    # no cantidad de filas: con escaneos diarios contar filas solo medía
+    # hace cuánto se sigue el libro.
     cursor.execute("""
-        SELECT lib.titulo, lib.autor, COUNT(p.id) as cambios,
+        SELECT lib.titulo, lib.autor, c.cambios,
                (SELECT GROUP_CONCAT(l.nombre, ' | ') FROM listas l
                 JOIN libros_listas ll2 ON ll2.lista_id = l.id
                 WHERE ll2.libro_id = lib.id) as listas
-        FROM precios p
-        JOIN libros lib ON lib.id = p.libro_id
-        GROUP BY p.libro_id
-        ORDER BY cambios DESC LIMIT 5
+        FROM (
+            SELECT libro_id,
+                   SUM(CASE WHEN anterior IS NOT NULL AND precio_actual != anterior THEN 1 ELSE 0 END) as cambios
+            FROM (
+                SELECT libro_id, precio_actual,
+                       LAG(precio_actual) OVER (PARTITION BY libro_id ORDER BY fecha, id) as anterior
+                FROM precios
+                WHERE estado = 'disponible' AND precio_actual IS NOT NULL
+            )
+            GROUP BY libro_id
+        ) c
+        JOIN libros lib ON lib.id = c.libro_id
+        ORDER BY c.cambios DESC LIMIT 5
     """)
     mas_cambios = cursor.fetchall()
 
-    cursor.execute("""
+    # Las tres consultas siguientes usan el último registro de cada libro
+    # (SUBQUERY_ULTIMO_PRECIO_ID); antes "GROUP BY ... HAVING MAX(fecha)"
+    # no garantizaba tomar la fila más reciente.
+    cursor.execute(f"""
         SELECT lib.titulo, lib.autor, p.precio_actual, p.precio_antes, p.descuento,
                (p.precio_antes - p.precio_actual) as ahorro,
                (SELECT GROUP_CONCAT(l.nombre, ' | ') FROM listas l
                 JOIN libros_listas ll2 ON ll2.lista_id = l.id
                 WHERE ll2.libro_id = lib.id) as listas
-        FROM precios p
-        JOIN libros lib ON lib.id = p.libro_id
-        WHERE p.id IN (SELECT id FROM precios WHERE estado = 'disponible' GROUP BY libro_id HAVING MAX(fecha))
+        FROM libros lib
+        JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
+        WHERE p.estado = 'disponible'
         AND p.precio_antes IS NOT NULL AND p.precio_actual IS NOT NULL
         ORDER BY ahorro DESC LIMIT 5
     """)
     mayor_ahorro = cursor.fetchall()
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT lib.titulo, lib.autor, p.descuento, p.precio_actual, p.precio_antes,
                (SELECT GROUP_CONCAT(l.nombre, ' | ') FROM listas l
                 JOIN libros_listas ll2 ON ll2.lista_id = l.id
                 WHERE ll2.libro_id = lib.id) as listas
-        FROM precios p
-        JOIN libros lib ON lib.id = p.libro_id
+        FROM libros lib
+        JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
         WHERE p.estado = 'disponible' AND p.descuento != 'Sin descuento'
         ORDER BY CAST(SUBSTR(p.descuento, 1, INSTR(p.descuento, '%') - 1) AS INTEGER) DESC
         LIMIT 5
     """)
     mayor_descuento = cursor.fetchall()
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT SUM(p.precio_antes - p.precio_actual) as total_ahorro
-        FROM precios p
-        WHERE p.id IN (SELECT id FROM precios WHERE estado = 'disponible' GROUP BY libro_id HAVING MAX(fecha))
+        FROM libros lib
+        JOIN precios p ON p.id = ({SUBQUERY_ULTIMO_PRECIO_ID})
+        WHERE p.estado = 'disponible'
         AND p.precio_antes IS NOT NULL AND p.precio_actual IS NOT NULL
     """)
     total_ahorro = cursor.fetchone()[0]
@@ -421,10 +438,13 @@ def stats() -> str:
     """)
     mas_antiguos = cursor.fetchall()
 
+    # Las fechas se guardan en hora de Chile; DATE('now') de SQLite es UTC
+    # y entre las 20:00/21:00 y medianoche contaba "hoy" como el día siguiente.
+    hoy_chile = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d")
     cursor.execute("""
         SELECT COUNT(*) FROM precios
-        WHERE DATE(fecha) = DATE('now')
-    """)
+        WHERE DATE(fecha) = ?
+    """, (hoy_chile,))
     precios_hoy = cursor.fetchone()[0]
 
     conn.close()
