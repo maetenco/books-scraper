@@ -27,6 +27,7 @@
                 <th class="text-end">Precio actual</th>
                 <th class="text-end">Precio antes</th>
                 <th class="text-center">Dto.</th>
+                <th class="text-center">Evaluación</th>
                 <th class="text-end">Precio más bajo</th>
                 <th class="text-center">Desde</th>
                 <th class="text-center">Últ. Precio</th>
@@ -84,6 +85,12 @@
                         <span class="badge bg-danger">{{ libro['descuento'] }}</span>
                     {% else %}
                         <span class="text-secondary">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-center">
+                    {% set ev = evaluaciones.get(libro['id']) %}
+                    {% if ev %}
+                        <span class="badge text-bg-{{ ev['class'] }}" title="{{ ev['detail'] }}">{{ ev['label'] }}</span>
                     {% endif %}
                 </td>
                 <td class="text-end font-monospace">

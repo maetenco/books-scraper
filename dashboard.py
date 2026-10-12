@@ -6,8 +6,11 @@ import os
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from collections import defaultdict
 from flask import Flask, render_template, jsonify, request, Response
 from utils import formatear_precio
+from analisis import evaluar_libro, detectar_eventos, serie_descuento_diario, redactar_evento
+from indicadores import cargar_uf
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,6 +92,8 @@ def formatear_fecha(fecha: str | None) -> str:
 
 
 app.jinja_env.filters["fecha"] = formatear_fecha
+# "$12.990" o "—" si es None (un .format() directo sobre None tiraba la página).
+app.jinja_env.filters["precio"] = formatear_precio
 
 
 # type hint: precios_str: str | None, ancho: int = 80, alto: int = 24,
@@ -124,6 +129,30 @@ def sparkline(precios_str: str | None, ancho: int = 80, alto: int = 24) -> str:
 
 
 app.jinja_env.filters["sparkline"] = sparkline
+
+
+# Niveles de analisis.evaluar_libro() que cuentan como "buen precio" para
+# el filtro de /todos.
+NIVELES_BUEN_PRECIO = {"min_historico", "min_anual", "buen_precio"}
+# Escaneos que muestra el gráfico de descuento medio en /stats.
+DIAS_GRAFICO_EVENTOS = 90
+
+
+# type hint: conn: sqlite3.Connection, retorno -> dict[int, dict]
+# Mejora: una sola query para todo el historial (≈30k filas) en vez de una
+#         por libro; la evaluación es Python puro (analisis.py).
+def evaluar_libros(conn: sqlite3.Connection) -> dict[int, dict]:
+    """{libro_id: evaluación} para todos los libros con precios."""
+    uf = cargar_uf(conn)
+    por_libro: dict[int, list] = defaultdict(list)
+    for fila in conn.execute("SELECT libro_id, fecha, precio_actual, estado FROM precios"):
+        por_libro[fila["libro_id"]].append(fila)
+    evaluaciones = {}
+    for libro_id, filas in por_libro.items():
+        ev = evaluar_libro(filas, uf)
+        if ev:
+            evaluaciones[libro_id] = ev
+    return evaluaciones
 
 
 # ── [5] index: página principal con resumen ──
@@ -198,9 +227,10 @@ def ver_lista(lista_id: int) -> str | tuple:
         ORDER BY lib.titulo
     """, (lista_id,))
     libros = cursor.fetchall()
+    evaluaciones = evaluar_libros(conn)
 
     conn.close()
-    return render_template("lista.html", lista=lista, libros=libros)
+    return render_template("lista.html", lista=lista, libros=libros, evaluaciones=evaluaciones)
 
 
 # ── [7] ver_todos: todos los libros con búsqueda y orden ──
@@ -214,6 +244,7 @@ def ver_todos() -> str:
     sort = request.args.get("sort", "titulo")
     order = request.args.get("order", "asc")
     q = request.args.get("q", "").strip()
+    solo_buenos = request.args.get("buenos") == "1"
 
     SORT_COLUMNS = {"titulo", "autor", "precio", "descuento"}
     ALLOWED_ORDER = {"asc", "desc"}
@@ -264,8 +295,13 @@ def ver_todos() -> str:
             return -1
         libros.sort(key=descuento_valor, reverse=(order == "desc"))
 
+    evaluaciones = evaluar_libros(conn)
+    if solo_buenos:
+        libros = [lb for lb in libros if evaluaciones.get(lb["id"], {}).get("nivel") in NIVELES_BUEN_PRECIO]
+
     conn.close()
-    return render_template("todos.html", libros=libros, sort=sort, order=order, q=q)
+    return render_template("todos.html", libros=libros, sort=sort, order=order, q=q,
+                           evaluaciones=evaluaciones, solo_buenos=solo_buenos)
 
 
 # ── [8] export_csv: descarga CSV ──
@@ -447,9 +483,20 @@ def stats() -> str:
     """, (hoy_chile,))
     precios_hoy = cursor.fetchone()[0]
 
+    # Eventos de rebaja de la tienda (analisis.detectar_eventos): días en
+    # que el descuento medio del catálogo supera claramente lo habitual.
+    cursor.execute("SELECT libro_id, fecha, descuento, estado FROM precios")
+    eventos = detectar_eventos(serie_descuento_diario(cursor.fetchall()))
+    eventos_grafico = [e for e in eventos if e["habitual"] is not None][-DIAS_GRAFICO_EVENTOS:]
+    textos_eventos = [redactar_evento(e) for e in reversed(eventos) if e["es_evento"]]
+    estado_hoy = eventos[-1] if eventos and eventos[-1]["habitual"] is not None else None
+
     conn.close()
 
     return render_template("stats.html",
+        eventos_grafico=eventos_grafico,
+        textos_eventos=textos_eventos,
+        estado_hoy=estado_hoy,
         total_libros=total_libros,
         total_precios=total_precios,
         ultima_actualizacion=ultima_actualizacion,
@@ -466,74 +513,10 @@ def stats() -> str:
 # ── [10] ver_libro: detalle individual con gráfico ──
 # type hint: libro_id: int, retorno -> str | tuple
 # Mejora: str | tuple cubre el caso 404 cuando el libro no existe.
-# ── Algoritmo de recomendación de compra ──
-# Umbral: a qué distancia del mínimo histórico se considera "mejor momento".
-RATIO_MEJOR_MOMENTO = 1.03
-# Ventana de precios recientes usada para calcular la tendencia (subiendo/bajando).
-VENTANA_TENDENCIA = 5
-
-
-def calcular_recomendacion(precios: list) -> dict | None:
-    """Algoritmo puro de recomendación de compra.
-
-    Extraído de ver_libro() para poder testearse sin pasar por
-    Flask/HTTP. `precios` es una lista de filas (sqlite3.Row o dict)
-    con clave "precio_actual", ordenadas por fecha DESCENDENTE (la más
-    reciente primero) — el mismo orden que entrega la query de
-    ver_libro(). Retorna None si no hay precios válidos.
-    """
-    if not precios:
-        return None
-
-    valores = [p["precio_actual"] for p in precios if p["precio_actual"] is not None]
-    if not valores:
-        return None
-
-    min_price = min(valores)
-    current_price = valores[0]
-    ratio = current_price / min_price if min_price > 0 else 1
-
-    recent_window = list(reversed(precios[:VENTANA_TENDENCIA]))
-    recent_vals = [p["precio_actual"] for p in recent_window if p["precio_actual"] is not None]
-
-    if len(recent_vals) >= 2:
-        first_p = recent_vals[0]
-        last_p = recent_vals[-1]
-        if last_p < first_p:
-            trend = "down"
-        elif last_p > first_p:
-            trend = "up"
-        else:
-            trend = "stable"
-    else:
-        trend = "stable"
-
-    if ratio <= RATIO_MEJOR_MOMENTO:
-        return {
-            "label": "Mejor momento ✅",
-            "class": "success",
-            "detail": f"A solo {((ratio - 1) * 100):.0f}% del mínimo histórico"
-        }
-    elif trend == "down":
-        return {
-            "label": "Espera 📉",
-            "class": "info",
-            "detail": "El precio viene bajando, conviene esperar"
-        }
-    elif trend == "up":
-        return {
-            "label": "Subiendo 📈",
-            "class": "warning",
-            "detail": "El precio está subiendo en los últimos registros"
-        }
-    else:
-        return {
-            "label": "Sin tendencia clara",
-            "class": "secondary",
-            "detail": ""
-        }
-
-
+# La evaluación ("Mínimo del año", "Mínimo histórico" ajustado por UF,
+# percentil) vive en analisis.evaluar_libro(); reemplaza al antiguo
+# calcular_recomendacion(), cuya tendencia de 5 registros reaccionaba al
+# ruido diario del tipo de cambio.
 @app.route("/libro/<int:libro_id>")
 def ver_libro(libro_id: int) -> str | tuple:
     conn = get_db()
@@ -561,15 +544,14 @@ def ver_libro(libro_id: int) -> str | tuple:
     """, (libro_id,))
     precios = list(cursor.fetchall())
 
+    evaluacion = evaluar_libro(precios, cargar_uf(conn))
     conn.close()
-
-    recomendacion = calcular_recomendacion(precios)
 
     return render_template("libro.html",
                            libro=libro,
                            listas=listas,
                            precios=precios,
-                           recomendacion=recomendacion)
+                           evaluacion=evaluacion)
 
 
 # ── [11] eliminar_libro: borra libro vía POST ──

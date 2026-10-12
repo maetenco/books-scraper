@@ -99,3 +99,70 @@ def test_stats_cuenta_cambios_reales_y_usa_ultimo_precio(client):
     assert ("Variable", "2") in filas_cambios
     assert "$21.000" not in html  # ahorro de una fila vieja
     assert "70%" not in html      # descuento de una fila vieja
+
+
+# ── Fase 3: evaluación por libro y eventos de tienda ──
+
+def _seed_libro_con_historial(db_path, titulo, precios_previos, precio_hoy, lista=True):
+    """Un precio por día hasta 2026-10-12 (hoy = último). Devuelve libro_id."""
+    import sqlite3
+    from datetime import date, timedelta
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO libros (titulo, autor) VALUES (?, 'autor')", (titulo,))
+    libro_id = cur.lastrowid
+    if lista:
+        cur.execute("INSERT OR IGNORE INTO listas (lista_id, nombre) VALUES ('L1', 'Mi lista')")
+        cur.execute("INSERT INTO libros_listas (libro_id, lista_id) SELECT ?, id FROM listas WHERE lista_id = 'L1'", (libro_id,))
+    hoy = date(2026, 10, 12)
+    todos = precios_previos + [precio_hoy]
+    for i, precio in enumerate(todos):
+        dia = hoy - timedelta(days=len(todos) - 1 - i)
+        cur.execute(
+            "INSERT INTO precios (libro_id, precio_actual, precio_antes, descuento, estado, fecha) "
+            "VALUES (?, ?, 40000, '50%', 'disponible', ?)", (libro_id, precio, f"{dia} 10:00:00"))
+    conn.commit()
+    conn.close()
+    return libro_id
+
+
+def test_libro_muestra_evaluacion_minimo_del_año(client):
+    import dashboard
+    libro_id = _seed_libro_con_historial(dashboard.DB_PATH, "dune", [20000] * 40, 18000)
+    html = client.get(f"/libro/{libro_id}").data.decode("utf-8")
+    assert "Mínimo histórico 🏆" in html or "Mínimo del año ✅" in html
+    assert "precio más bajo del año ($18.000)" in html
+
+
+def test_todos_filtra_solo_buenos_precios(client):
+    import dashboard
+    _seed_libro_con_historial(dashboard.DB_PATH, "barato", [20000] * 40, 18000)
+    _seed_libro_con_historial(dashboard.DB_PATH, "caro", list(range(10000, 50000, 1000)), 48000)
+
+    todos = client.get("/todos").data.decode("utf-8").lower()
+    assert "barato" in todos and "caro" in todos
+    buenos = client.get("/todos?buenos=1").data.decode("utf-8").lower()
+    assert "barato" in buenos
+    assert ">caro<" not in buenos and "caro\n" not in buenos.split("<tbody>")[1]
+
+
+def test_stats_muestra_eventos_de_tienda(client):
+    import sqlite3
+    import dashboard
+    from analisis import MIN_LIBROS_DIA
+    conn = sqlite3.connect(dashboard.DB_PATH)
+    cur = conn.cursor()
+    # MIN_LIBROS_DIA libros escaneados 12 días: 42% habitual, el día 11 sube a 50%.
+    for n in range(MIN_LIBROS_DIA):
+        cur.execute("INSERT INTO libros (titulo, autor) VALUES (?, 'a')", (f"libro {n}",))
+        lid = cur.lastrowid
+        for d in range(1, 13):
+            dcto = "50%" if d == 11 else "42%"
+            cur.execute("INSERT INTO precios (libro_id, precio_actual, descuento, estado, fecha) "
+                        "VALUES (?, 10000, ?, 'disponible', ?)", (lid, dcto, f"2026-09-{d:02d} 10:00:00"))
+    conn.commit()
+    conn.close()
+
+    html = client.get("/stats").data.decode("utf-8")
+    assert "Rebajas de la tienda" in html
+    assert "El 11/09/26 fue una buena rebaja de la tienda" in html
