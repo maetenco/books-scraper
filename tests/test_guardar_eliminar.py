@@ -277,3 +277,65 @@ def test_eliminar_libro_database_locked_devuelve_503(client, monkeypatch):
     cursor.execute("SELECT COUNT(*) FROM libros WHERE id = ?", (libro_id,))
     assert cursor.fetchone()[0] == 1  # no se borró nada, el rollback funcionó
     conn.close()
+
+
+# ── registrar_precio=False: libro repetido en otra lista de la misma corrida ──
+
+def test_guardar_libro_sin_registrar_precio_solo_vincula_lista():
+    conn = _nueva_conexion()
+    lista_a = _crear_lista(conn, "LA", "A")
+    lista_b = _crear_lista(conn, "LB", "B")
+    guardar_libro(conn, _libro(precio_actual=20000), lista_a)
+    cambio = guardar_libro(conn, _libro(precio_actual=20000), lista_b, registrar_precio=False)
+
+    assert cambio is None
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM precios")
+    assert cursor.fetchone()[0] == 1  # un solo precio aunque esté en 2 listas
+    cursor.execute("SELECT COUNT(*) FROM libros_listas")
+    assert cursor.fetchone()[0] == 2
+    conn.close()
+
+
+# ── sincronizar_vinculos_lista(): libros que salieron de la wishlist ──
+
+def test_sincronizar_desvincula_libros_que_ya_no_estan_y_conserva_historial():
+    from scrap import sincronizar_vinculos_lista
+    conn = _nueva_conexion()
+    id_lista = _crear_lista(conn)
+    guardar_libro(conn, _libro(titulo="dune"), id_lista)
+    guardar_libro(conn, _libro(titulo="emma", autor="jane austen"), id_lista)
+    guardar_libro(conn, _libro(titulo="ulises", autor="james joyce"), id_lista)
+
+    quitados = sincronizar_vinculos_lista(
+        conn, id_lista, {("dune", "frank herbert"), ("emma", "jane austen")}
+    )
+
+    assert quitados == 1
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM libros_listas WHERE lista_id = ?", (id_lista,))
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("SELECT COUNT(*) FROM libros WHERE titulo = 'ulises'")
+    assert cursor.fetchone()[0] == 1  # el libro sigue
+    cursor.execute("SELECT COUNT(*) FROM precios p JOIN libros l ON l.id = p.libro_id WHERE l.titulo = 'ulises'")
+    assert cursor.fetchone()[0] == 1  # y su historial también
+    conn.close()
+
+
+def test_sincronizar_no_toca_nada_si_el_escaneo_parece_incompleto():
+    from scrap import sincronizar_vinculos_lista
+    conn = _nueva_conexion()
+    id_lista = _crear_lista(conn)
+    for i in range(10):
+        guardar_libro(conn, _libro(titulo=f"libro {i}"), id_lista)
+
+    # Solo 3 de 10 (< 50%): probablemente la página no cargó completa.
+    quitados = sincronizar_vinculos_lista(
+        conn, id_lista, {(f"libro {i}", "frank herbert") for i in range(3)}
+    )
+    assert quitados == 0
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM libros_listas WHERE lista_id = ?", (id_lista,))
+    assert cursor.fetchone()[0] == 10
+    assert sincronizar_vinculos_lista(conn, id_lista, set()) == 0  # lista vacía: tampoco
+    conn.close()

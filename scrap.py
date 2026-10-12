@@ -43,14 +43,25 @@ logger = logging.getLogger(__name__)
 #       y retorna lista de dicts con título, autor, precios, URL.
 #  [7] guardar_libro()      → INSERT/UPSERT del libro y su precio en
 #       la DB. Detecta bajas de precio comparando con último registro.
+#  [7a] sincronizar_vinculos_lista() → Desvincula libros que ya no
+#       están en la wishlist (conserva libro e historial).
 #  [8] main()               → Función async principal: login, recorre
 #       wishlists, scrapea productos, llama a guardar_libro().
 # ═══════════════════════════════════════════════════════════════
 
 AUTH_FILE = "auth.json"
-DB_PATH = "libros.db"
-BACKUPS_DIR = "backups"
+# BOOKS_DB_PATH permite apuntar a una copia de la DB (pruebas, migraciones
+# en seco) sin tocar libros.db. Los backups viven junto a la DB que se usa,
+# para que probar sobre una copia no rote los backups reales.
+DB_PATH = os.environ.get("BOOKS_DB_PATH", "libros.db")
+BACKUPS_DIR = os.path.join(os.path.dirname(DB_PATH), "backups")
 BACKUPS_A_MANTENER = 7  # backups diarios más recientes que se conservan
+
+# Al sincronizar una lista, si el escaneo trae menos de esta fracción de
+# los libros que ya tenía vinculados, se asume carga incompleta de la
+# página y no se desvincula nada (mejor un vínculo de más que perder
+# libros de la vista por un fallo transitorio).
+FRACCION_MINIMA_SINCRONIZAR = 0.5
 
 # Cuántas páginas de producto se abren en paralelo durante el lazy
 # scraping (extraer_precio_producto abre una página nueva por libro;
@@ -136,18 +147,21 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
 # type hint: conexion: sqlite3.Connection, retorno -> str | None
 # Mejora: str | None documenta que puede no haber backup (p. ej. si
 #         falla por disco lleno); el llamador decide si es fatal o no.
-def hacer_backup_db(conexion: sqlite3.Connection) -> str | None:
+def hacer_backup_db(conexion: sqlite3.Connection, directorio: str | None = None) -> str | None:
     """Copia libros.db a backups/libros_<fecha>.db usando la API de
     backup de sqlite3 (segura incluso con la conexión abierta, a
     diferencia de copiar el archivo a mano). Conserva solo los
     BACKUPS_A_MANTENER más recientes para no crecer indefinidamente.
     Nunca lanza: si falla, se loguea como warning y se retorna None,
     para que un backup fallido no tumbe el scraping.
+    `directorio` permite a migraciones.py dejar el backup junto a la DB
+    que está migrando (por defecto, BACKUPS_DIR).
     """
+    directorio = directorio or BACKUPS_DIR
     try:
-        os.makedirs(BACKUPS_DIR, exist_ok=True)
+        os.makedirs(directorio, exist_ok=True)
         fecha = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y%m%d_%H%M%S")
-        destino_path = os.path.join(BACKUPS_DIR, f"libros_{fecha}.db")
+        destino_path = os.path.join(directorio, f"libros_{fecha}.db")
 
         destino = sqlite3.connect(destino_path)
         with destino:
@@ -155,11 +169,11 @@ def hacer_backup_db(conexion: sqlite3.Connection) -> str | None:
         destino.close()
 
         backups = sorted(
-            f for f in os.listdir(BACKUPS_DIR)
+            f for f in os.listdir(directorio)
             if f.startswith("libros_") and f.endswith(".db")
         )
         for viejo in backups[:-BACKUPS_A_MANTENER]:
-            os.remove(os.path.join(BACKUPS_DIR, viejo))
+            os.remove(os.path.join(directorio, viejo))
 
         logger.info("Backup de %s creado en %s", DB_PATH, destino_path)
         return destino_path
@@ -344,7 +358,14 @@ def extraer_libros(soup: BeautifulSoup, base_url: str = "https://www.buscalibre.
 #           id_lista_db: int, retorno -> dict | None
 # Mejora: tipar id_lista_db como int evita pasar strings por error;
 #         dict | None documenta que puede fallar (libro duplicado).
-def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: int) -> dict | None:
+def guardar_libro(
+    conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: int, registrar_precio: bool = True
+) -> dict | None:
+    """Registra el libro, su vínculo con la lista y (si registrar_precio)
+    una fila de precio. main() pasa registrar_precio=False cuando el libro
+    ya se registró en otra lista de la misma corrida: así un libro en
+    varias listas deja un solo precio por escaneo y no filas duplicadas.
+    """
     cursor = conexion.cursor()
     titulo = datos_libro["titulo"]
     autor = datos_libro["autor"]
@@ -386,6 +407,10 @@ def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: 
         "INSERT OR IGNORE INTO libros_listas (libro_id, lista_id) VALUES (?, ?)",
         (id_libro, id_lista_db)
     )
+
+    if not registrar_precio:
+        conexion.commit()
+        return None
 
     # Se consulta el último precio ANTES de insertar el nuevo registro:
     # si se consultara después, la fila recién insertada podría ganar
@@ -429,6 +454,44 @@ def guardar_libro(conexion: sqlite3.Connection, datos_libro: dict, id_lista_db: 
 
     conexion.commit()
     return precio_cambio
+
+
+# ── [7a] sincronizar_vinculos_lista: quita libros que ya no están en la lista ──
+# type hint: conexion: sqlite3.Connection, id_lista_db: int,
+#           claves_vistas: set[tuple[str, str]], retorno -> int
+# Mejora: int = cuántos vínculos se quitaron, para loguearlo.
+def sincronizar_vinculos_lista(
+    conexion: sqlite3.Connection, id_lista_db: int, claves_vistas: set[tuple[str, str]]
+) -> int:
+    """Desvincula de la lista los libros que ya no aparecen en ella en
+    BuscaLibre. El libro y su historial de precios se conservan (solo se
+    borra la fila de libros_listas). Si el escaneo trajo muy pocos libros
+    respecto a los vinculados (FRACCION_MINIMA_SINCRONIZAR), no se toca
+    nada: probablemente la página no cargó completa.
+    """
+    cursor = conexion.cursor()
+    cursor.execute(
+        """SELECT lib.id, lib.titulo, lib.autor FROM libros lib
+           JOIN libros_listas ll ON ll.libro_id = lib.id
+           WHERE ll.lista_id = ?""",
+        (id_lista_db,)
+    )
+    vinculados = cursor.fetchall()
+    if not claves_vistas or len(claves_vistas) < len(vinculados) * FRACCION_MINIMA_SINCRONIZAR:
+        if vinculados:
+            logger.warning(
+                "Lista %s: escaneo trajo %s libros de %s vinculados, no se sincroniza",
+                id_lista_db, len(claves_vistas), len(vinculados),
+            )
+        return 0
+
+    a_quitar = [libro_id for libro_id, titulo, autor in vinculados if (titulo, autor) not in claves_vistas]
+    cursor.executemany(
+        "DELETE FROM libros_listas WHERE lista_id = ? AND libro_id = ?",
+        [(id_lista_db, libro_id) for libro_id in a_quitar]
+    )
+    conexion.commit()
+    return len(a_quitar)
 
 
 # ── [7b] _corregir_precio_libro: lazy scraping de un libro ──
@@ -543,8 +606,10 @@ async def main(headless: bool = False) -> tuple[list[dict], int]:
             nombre_lista = await nombre_lista.inner_text()
             print(f"Lista: {nombre_lista}")
 
+            # UPSERT: si la lista se renombró en BuscaLibre, se actualiza aquí.
             cursor.execute(
-                "INSERT OR IGNORE INTO listas (lista_id, nombre) VALUES (?, ?)",
+                "INSERT INTO listas (lista_id, nombre) VALUES (?, ?) "
+                "ON CONFLICT(lista_id) DO UPDATE SET nombre = excluded.nombre",
                 (lista_id, nombre_lista)
             )
             conexion.commit()
@@ -602,10 +667,20 @@ async def main(headless: bool = False) -> tuple[list[dict], int]:
             print(f"Precios corregidos: {corregidos} de {len(datos_lista)}")
 
             for libro in datos_lista:
-                libros_escaneados.add((libro["titulo"], libro["autor"]))
-                cambio = guardar_libro(conexion, libro, id_lista_db)
+                clave = (libro["titulo"], libro["autor"])
+                # Si ya se registró su precio en otra lista de esta corrida,
+                # solo se vincula a esta lista (evita filas duplicadas).
+                ya_registrado = clave in libros_escaneados
+                libros_escaneados.add(clave)
+                cambio = guardar_libro(conexion, libro, id_lista_db, registrar_precio=not ya_registrado)
                 if cambio:
                     cambios.append(cambio)
+
+            quitados = sincronizar_vinculos_lista(
+                conexion, id_lista_db, {(lb["titulo"], lb["autor"]) for lb in datos_lista}
+            )
+            if quitados:
+                logger.info("Lista %s: %s libros ya no están en ella, se desvinculan", nombre_lista, quitados)
 
             print("Scraping terminado")
 

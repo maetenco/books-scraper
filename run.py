@@ -69,7 +69,7 @@ logger = logging.getLogger("run")
 load_dotenv()
 
 # ── [2] scrap_main: scraper principal ──
-from scrap import main as scrap_main
+from scrap import main as scrap_main, DB_PATH
 from telegram import notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_ofertas_flash
 
 
@@ -99,7 +99,7 @@ async def run() -> None:
     cambios, total_escaneados = await scrap_main(headless=not args.login)
     marcar_ejecucion_hoy()
 
-    conn = sqlite3.connect("libros.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
 
     # ── [3] Bajas (de scrap_main) y ofertas flash (consulta aparte) ──

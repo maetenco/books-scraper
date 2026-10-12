@@ -60,3 +60,42 @@ def test_export_csv(client):
     resp = client.get("/todos/export")
     assert resp.status_code == 200
     assert "text/csv" in resp.content_type
+
+
+def _seed_precios(db_path, titulo, filas):
+    """filas: lista de (precio_actual, precio_antes, descuento, fecha)."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO libros (titulo, autor) VALUES (?, 'autor')", (titulo,))
+    libro_id = cursor.lastrowid
+    cursor.executemany(
+        "INSERT INTO precios (libro_id, precio_actual, precio_antes, descuento, estado, fecha) "
+        "VALUES (?, ?, ?, ?, 'disponible', ?)",
+        [(libro_id, *f) for f in filas],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_stats_cuenta_cambios_reales_y_usa_ultimo_precio(client):
+    import re
+    import dashboard
+    # "estable": 4 registros con el mismo precio → 0 cambios.
+    _seed_precios(dashboard.DB_PATH, "estable", [
+        (10000, 20000, "50%", f"2026-10-0{d} 10:00:00") for d in range(1, 5)
+    ])
+    # "variable": 3 registros 10000 → 9000 → 10000 → 2 cambios; su último
+    # ahorro es 20000-10000, no el de la fila intermedia (21000).
+    _seed_precios(dashboard.DB_PATH, "variable", [
+        (10000, 20000, "50%", "2026-10-01 10:00:00"),
+        (9000, 30000, "70%", "2026-10-02 10:00:00"),
+        (10000, 20000, "50%", "2026-10-03 10:00:00"),
+    ])
+
+    html = client.get("/stats").data.decode("utf-8")
+
+    filas_cambios = re.findall(r"<td[^>]*>(Estable|Variable)</td>.*?<td class=\"text-end fw-bold\">(\d+)</td>", html, re.S)
+    assert ("Variable", "2") in filas_cambios
+    assert "$21.000" not in html  # ahorro de una fila vieja
+    assert "70%" not in html      # descuento de una fila vieja
