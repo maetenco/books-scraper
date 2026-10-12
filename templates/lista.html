@@ -9,7 +9,10 @@
     </ol>
 </nav>
 
-<h2 class="mb-4">{{ lista['nombre'] }}</h2>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2 class="mb-0">{{ lista['nombre'] }}</h2>
+    <button id="btnEliminarLista" class="btn btn-outline-danger btn-sm">🗑 Eliminar lista</button>
+</div>
 
 {% if libros %}
 <div class="table-responsive">
@@ -116,4 +119,29 @@
 {% endif %}
 
 <a href="/" class="btn btn-outline-secondary mt-3">← Volver</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const btn = document.getElementById('btnEliminarLista');
+    if (btn) {
+        btn.addEventListener('click', function() {
+            if (!confirm('¿Eliminar esta lista? Los libros no se borran, solo dejan de estar en esta lista.\n\nOjo: si la lista sigue existiendo en BuscaLibre, el próximo escaneo la volverá a crear. Bórrala también allá.')) return;
+            fetch("{{ url_for('eliminar_lista', lista_id=lista['id']) }}", {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ok) {
+                        window.location.href = "{{ url_for('index') }}";
+                    } else {
+                        alert(data.error || 'No se pudo eliminar la lista');
+                    }
+                });
+        });
+    }
+});
+</script>
 {% endblock %}

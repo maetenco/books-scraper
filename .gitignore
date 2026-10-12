@@ -9,6 +9,10 @@ __pycache__/
 auth.json
 .last_run
 
+# ─── Logs ────────────────────────────────────────
+scraper.log*
+run_manual_output*.txt
+
 # ─── Databases ──────────────────────────────────
 *.db
 *.db-journal

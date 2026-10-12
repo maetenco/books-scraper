@@ -45,10 +45,15 @@
 <div class="row g-3">
     {% for lista in listas %}
     <div class="col-lg-4 col-md-6">
-        <a href="{{ url_for('ver_lista', lista_id=lista['id']) }}" class="text-decoration-none">
-            <div class="card h-100 border-secondary lista-card">
+        <div class="card h-100 border-secondary lista-card position-relative">
+            <button type="button"
+                    class="btn btn-sm btn-outline-danger btn-eliminar-lista position-absolute top-0 end-0 m-2"
+                    data-lista-id="{{ lista['id'] }}"
+                    data-lista-nombre="{{ lista['nombre'] }}"
+                    title="Eliminar lista">🗑</button>
+            <a href="{{ url_for('ver_lista', lista_id=lista['id']) }}" class="text-decoration-none">
                 <div class="card-body">
-                    <h5 class="card-title text-truncate">{{ lista['nombre'] }}</h5>
+                    <h5 class="card-title text-truncate pe-4">{{ lista['nombre'] }}</h5>
                     <p class="card-text text-secondary mb-0">
                         <span class="badge bg-primary">{{ lista['num_libros'] }} libros</span>
                     </p>
@@ -56,9 +61,37 @@
                 <div class="card-footer bg-transparent border-secondary text-end small text-secondary">
                     Ver lista →
                 </div>
-            </div>
-        </a>
+            </a>
+        </div>
     </div>
     {% endfor %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.btn-eliminar-lista').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const listaId = btn.dataset.listaId;
+            const nombre = btn.dataset.listaNombre;
+            if (!confirm('¿Eliminar la lista "' + nombre + '"? Los libros no se borran, solo dejan de estar en esta lista.\n\nOjo: si la lista sigue existiendo en BuscaLibre, el próximo escaneo la volverá a crear. Bórrala también allá.')) return;
+            fetch('/lista/' + listaId + '/eliminar', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ok) {
+                        window.location.reload();
+                    } else {
+                        alert(data.error || 'No se pudo eliminar la lista');
+                    }
+                });
+        });
+    });
+});
+</script>
 {% endblock %}

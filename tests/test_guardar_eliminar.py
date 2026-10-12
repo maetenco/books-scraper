@@ -189,6 +189,58 @@ def test_eliminar_libro_inexistente_da_404(client):
     assert resp.status_code == 404
 
 
+# ── eliminar_lista(): borra lista sin tocar los libros ──
+
+def test_eliminar_lista_borra_lista_y_vinculos_sin_tocar_libro(client):
+    libro_id = _seed_libro_completo(dashboard.DB_PATH)
+
+    conn = sqlite3.connect(dashboard.DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT lista_id FROM libros_listas WHERE libro_id = ?", (libro_id,))
+    lista_id = cursor.fetchone()[0]
+    conn.close()
+
+    resp = client.post(
+        f"/lista/{lista_id}/eliminar",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+
+    conn = sqlite3.connect(dashboard.DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM listas WHERE id = ?", (lista_id,))
+    assert cursor.fetchone()[0] == 0
+    cursor.execute("SELECT COUNT(*) FROM libros_listas WHERE lista_id = ?", (lista_id,))
+    assert cursor.fetchone()[0] == 0
+    cursor.execute("SELECT COUNT(*) FROM libros WHERE id = ?", (libro_id,))
+    assert cursor.fetchone()[0] == 1  # el libro no se borra, solo pierde el vínculo
+    conn.close()
+
+
+def test_eliminar_lista_sin_header_csrf_es_rechazado(client):
+    conn = sqlite3.connect(dashboard.DB_PATH)
+    lista_id = _crear_lista(conn, lista_id="LX", nombre="Lista X")
+    conn.close()
+
+    resp = client.post(f"/lista/{lista_id}/eliminar")  # sin X-Requested-With
+    assert resp.status_code == 403
+
+    conn = sqlite3.connect(dashboard.DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM listas WHERE id = ?", (lista_id,))
+    assert cursor.fetchone()[0] == 1  # no se borró nada
+    conn.close()
+
+
+def test_eliminar_lista_inexistente_da_404(client):
+    resp = client.post(
+        "/lista/999999/eliminar",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert resp.status_code == 404
+
+
 class _ConexionQueFalla(sqlite3.Connection):
     """Doble de prueba: sqlite3.Connection es un tipo inmutable de C
     (no se puede monkeypatchear su método commit directamente), así
