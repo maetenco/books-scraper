@@ -1,9 +1,13 @@
-from telegram import formatear_precio, _extraer_porcentaje
-import sys
+"""
+Tests de telegram.py: envío (escape HTML, 429, rechazo) y alerta de
+fallo, sin red (requests.post mockeado).
+"""
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-# Test de telegram.py
+
+from utils import formatear_precio
 
 
 def test_formatear_precio_normal():
@@ -12,14 +16,6 @@ def test_formatear_precio_normal():
 
 def test_formatear_precio_none():
     assert formatear_precio(None) == "—"
-
-
-def test_extraer_porcentaje_normal():
-    assert _extraer_porcentaje("30% OFF") == 30
-
-
-def test_extraer_porcentaje_sin_descuento():
-    assert _extraer_porcentaje("Sin descuento") == 0
 
 
 # ── enviar_mensaje(): escape, 429 y rechazo (sin red: requests.post mockeado) ──
@@ -59,16 +55,8 @@ def envios(monkeypatch):
     return enviados, respuestas
 
 
-def test_notificar_bajas_escapa_html_de_titulos(envios):
-    enviados, _ = envios
-    telegram.notificar_bajas([{
-        "titulo": "tom & jerry <edición>", "autor": "a & b", "precio_viejo": 30000,
-        "precio_nuevo": 20000, "descuento": "50%", "url": "https://x/?a=1&b=2",
-    }])
-    assert len(enviados) == 1
-    assert "Tom &amp; Jerry &lt;Edición&gt;" in enviados[0]
-    assert "<edición>" not in enviados[0].lower()
-    assert 'href="https://x/?a=1&amp;b=2"' in enviados[0]
+def test_esc_escapa_html_y_comillas():
+    assert telegram.esc('tom & jerry <ed> "x"') == "tom &amp; jerry &lt;ed&gt; &quot;x&quot;"
 
 
 def test_enviar_mensaje_reintenta_tras_429(envios):

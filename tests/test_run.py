@@ -20,9 +20,8 @@ def entorno(monkeypatch, tmp_path):
     monkeypatch.setattr(run, "ya_corrio_hoy", lambda: False)
     monkeypatch.setattr(run, "marcar_ejecucion_hoy", lambda: marcas.append(True))
     monkeypatch.setattr(run, "DB_PATH", str(tmp_path / "test.db"))
-    for nombre in ("notificar_bajas", "notificar_resumen", "notificar_ofertas_flash", "notificar_fallo"):
-        monkeypatch.setattr(run, nombre, lambda *a, **k: True)
-    monkeypatch.setattr(run, "detectar_ofertas_flash", lambda conn: [])
+    monkeypatch.setattr(run, "notificar_fallo", lambda *a, **k: True)
+    monkeypatch.setattr(run, "enviar_mensaje", lambda texto: pytest.fail("no debe enviar a Telegram"))
     monkeypatch.setattr(run, "actualizar_uf", lambda conn: 0)  # sin red (SII)
     return marcas
 

@@ -5,6 +5,7 @@ Uso:
     python run.py                    # headless + Telegram
     python run.py --no-telegram      # solo headless, sin notificar
     python run.py --login            # mode manual (guardar sesión)
+    python run.py --preview-alertas  # muestra las alertas de la DB actual, sin scrapear ni enviar
 
 Para programar (Windows Task Scheduler):
     Action: python C:\ruta\run.py
@@ -53,12 +54,10 @@ logger = logging.getLogger("run")
 #       y TELEGRAM_CHAT_ID desde el archivo .env.
 #  [2] scrap_main()          → Llama a main() de scrap.py con
 #       headless=True/False según flag --login.
-#  [3] detectar_ofertas_flash → Consulta la DB en busca de saltos
-#       de descuento; las bajas de precio vienen directo de
-#       scrap_main() (cambios), no se recalculan aparte.
-#  [4] notificar_bajas /     → Envían alertas al chat de Telegram
-#      notificar_resumen /      con formato HTML.
-#      notificar_ofertas_flash
+#  [3] calcular_alertas()   → (alertas.py) nuevos mínimos del año,
+#       evento de rebaja de la tienda y resumen semanal.
+#  [4] enviar_alertas()     → Envía cada mensaje por Telegram y lo
+#       registra en `notificaciones` solo si Telegram lo aceptó.
 #  [5] Argumentos CLI        → --no-telegram omite notificaciones;
 #       --login fuerza navegador visible para autenticación.
 #  [6] asyncio.run(run())    → Entry point asíncrono requerido
@@ -71,9 +70,8 @@ load_dotenv()
 # ── [2] scrap_main: scraper principal ──
 from scrap import main as scrap_main, DB_PATH, SesionExpirada
 from indicadores import actualizar_uf
-from telegram import (
-    notificar_bajas, notificar_resumen, notificar_ofertas_flash, detectar_ofertas_flash, notificar_fallo,
-)
+from alertas import calcular_alertas, redactar_mensajes, registrar_notificaciones
+from telegram import enviar_mensaje, notificar_fallo
 
 
 # ── [5] Argumentos CLI ──
@@ -85,13 +83,41 @@ def parsear_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-telegram", action="store_true", help="Skip Telegram notifications")
     parser.add_argument("--login", action="store_true", help="Run with browser (save session)")
     parser.add_argument("--force", action="store_true", help="Run even if it already ran today")
+    parser.add_argument("--preview-alertas", action="store_true",
+                        help="Show the alerts for the current DB without scraping or sending")
     return parser.parse_args(argv)
+
+
+# ── [4] enviar_alertas: calcula, envía (o muestra) y registra ──
+# type hint: conn: sqlite3.Connection, enviar: bool, retorno -> list[str]
+# Mejora: list[str] = los textos generados, para --preview-alertas y tests.
+def enviar_alertas(conn: sqlite3.Connection, enviar: bool = True) -> list[str]:
+    mensajes = redactar_mensajes(calcular_alertas(conn))
+    if not mensajes:
+        logger.info("Sin alertas para enviar")
+    for texto, claves in mensajes:
+        if not enviar:
+            continue
+        if enviar_mensaje(texto):
+            registrar_notificaciones(conn, claves)
+        else:
+            logger.warning("No se pudo enviar una alerta; se reintentará en la próxima corrida")
+    return [texto for texto, _ in mensajes]
 
 
 # type hint: args: argparse.Namespace, retorno -> None
 # Mejora: None indica que run() ejecuta efectos secundarios
 #         (scraping, notificaciones) sin retornar valor útil.
 async def run(args: argparse.Namespace) -> None:
+    if args.preview_alertas:
+        # Solo lectura de lo que se enviaría: no scrapea, no envía, no registra.
+        conn = sqlite3.connect(DB_PATH)
+        textos = enviar_alertas(conn, enviar=False)
+        conn.close()
+        for texto in textos:
+            print("\n" + "─" * 60 + "\n" + texto)
+        print(f"\n{len(textos)} mensaje(s) se enviarían.")
+        return
 
     # ── Evita correr dos veces el mismo día ──
     # El Task Scheduler dispara run.py por horario fijo (10:00) y también
@@ -121,31 +147,14 @@ async def run(args: argparse.Namespace) -> None:
     if nuevas_uf:
         logger.info("UF: %s valores nuevos desde el SII", nuevas_uf)
 
-    # ── [3] Bajas (de scrap_main) y ofertas flash (consulta aparte) ──
-    ofertas_flash = detectar_ofertas_flash(conn)
-    stats = {
-        "total_escaneados": total_escaneados,
-        "libros_con_baja": len(set(c["titulo"] for c in cambios)),
-        "bajas": len(cambios),
-        "ofertas_flash": len(ofertas_flash),
-    }
+    logger.info("Resumen: %s libros escaneados, %s bajaron vs su registro anterior",
+                total_escaneados, len(cambios))
 
-    logger.info(
-        "Resumen: %s libros escaneados, %s con baja de precio (%s bajas), %s ofertas flash",
-        stats["total_escaneados"], stats["libros_con_baja"], stats["bajas"], stats["ofertas_flash"],
-    )
-
-    # ── [4] Notificaciones Telegram ──
-    if not args.no_telegram:
-        if cambios:
-            notificar_bajas(cambios)
-        else:
-            logger.info("Sin bajas de precio para notificar")
-        if ofertas_flash:
-            notificar_ofertas_flash(ofertas_flash)
-        else:
-            logger.info("Sin ofertas flash para notificar")
-        notificar_resumen(stats)
+    # ── [3]/[4] Alertas: nuevos mínimos, evento de tienda, resumen semanal ──
+    if args.no_telegram:
+        logger.info("--no-telegram: no se envían alertas")
+    else:
+        enviar_alertas(conn)
 
     conn.close()
     logger.info("=== Corrida finalizada OK ===")
