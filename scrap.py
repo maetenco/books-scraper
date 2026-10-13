@@ -9,6 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from indicadores import crear_tabla_uf
+from alertas import crear_tabla_notificaciones
 from playwright.async_api import (
     async_playwright,
     BrowserContext,
@@ -149,6 +150,8 @@ def crear_tablas(conexion: sqlite3.Connection) -> None:
 
     # Caché de UF diaria (indicadores.py) para el mínimo histórico ajustado.
     crear_tabla_uf(conexion)
+    # Registro de alertas ya enviadas (alertas.py), para no repetirlas.
+    crear_tabla_notificaciones(conexion)
 
     conexion.commit()
 
